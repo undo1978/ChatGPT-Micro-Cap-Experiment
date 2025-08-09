@@ -245,7 +245,7 @@ def log_sell(
         "PnL": pnl,
         "Reason": "AUTOMATED SELL - STOPLOSS TRIGGERED",
     }
-
+    print(f"{ticker} stop loss was met. Selling all shares.")
     portfolio = portfolio[portfolio["ticker"] != ticker]
 
     if TRADE_LOG_CSV.exists():
@@ -266,14 +266,8 @@ def log_manual_buy(
     chatgpt_portfolio: pd.DataFrame,
     interactive: bool = True,
 ) -> tuple[float, pd.DataFrame]:
-    """Log a manual purchase and append to the portfolio.
+    """Log a manual purchase and append to the portfolio."""
 
-    Parameters
-    ----------
-    interactive:
-        When ``False`` the confirmation prompt is skipped. Useful for driving
-        the function from a graphical user interface.
-    """
     if interactive:
         check = input(
             f"""You are currently trying to buy {shares} shares of {ticker} with a price of {buy_price} and a stoploss of {stoploss}.
@@ -283,25 +277,35 @@ def log_manual_buy(
             print("Returning...")
             return cash, chatgpt_portfolio
 
-    data = yf.download(ticker, period="1d")
+    # Ensure DataFrame exists with required columns
+    if not isinstance(chatgpt_portfolio, pd.DataFrame) or chatgpt_portfolio.empty:
+        chatgpt_portfolio = pd.DataFrame(columns=["ticker", "shares", "stop_loss", "buy_price", "cost_basis"])
+
+    # Download current market data
+    data = yf.download(ticker, period="1d", auto_adjust=False, progress=False)
     data = cast(pd.DataFrame, data)
+
     if data.empty:
         print(f"Manual buy for {ticker} failed: no market data available.")
         return cash, chatgpt_portfolio
+
     day_high = float(data["High"].iloc[-1].item())
     day_low = float(data["Low"].iloc[-1].item())
+
     if not (day_low <= buy_price <= day_high):
         print(
             f"Manual buy for {ticker} at {buy_price} failed: price outside today's range {round(day_low, 2)}-{round(day_high, 2)}."
         )
         return cash, chatgpt_portfolio
+
     if buy_price * shares > cash:
         print(
             f"Manual buy for {ticker} failed: cost {buy_price * shares} exceeds cash balance {cash}."
         )
         return cash, chatgpt_portfolio
-    pnl = 0.0
 
+    # Log trade to trade log CSV
+    pnl = 0.0
     log = {
         "Date": today,
         "Ticker": ticker,
@@ -318,31 +322,44 @@ def log_manual_buy(
     else:
         df = pd.DataFrame([log])
     df.to_csv(TRADE_LOG_CSV, index=False)
-    # if the portfolio doesn't already contain ticker, create a new row.
-    
-    mask = chatgpt_portfolio["ticker"] == ticker
 
-    if not mask.any():
+    # === Update portfolio DataFrame ===
+    rows = chatgpt_portfolio.loc[
+        chatgpt_portfolio["ticker"].astype(str).str.upper() == ticker.upper()
+    ]
+
+    if rows.empty:
+        # New position
         new_trade = {
             "ticker": ticker,
-            "shares": shares,
-            "stop_loss": stoploss,
-            "buy_price": buy_price,
-            "cost_basis": buy_price * shares,
+            "shares": float(shares),
+            "stop_loss": float(stoploss),
+            "buy_price": float(buy_price),
+            "cost_basis": float(buy_price * shares),
         }
         chatgpt_portfolio = pd.concat(
             [chatgpt_portfolio, pd.DataFrame([new_trade])], ignore_index=True
         )
     else:
-        row_index = chatgpt_portfolio[mask].index[0]
-        current_shares = float(chatgpt_portfolio.at[row_index, "shares"])
-        chatgpt_portfolio.at[row_index, "shares"] = current_shares + shares
-        current_cost_basis = float(chatgpt_portfolio.at[row_index, "cost_basis"])
-        chatgpt_portfolio.at[row_index, "cost_basis"] = shares * buy_price + current_cost_basis
-        chatgpt_portfolio.at[row_index, "stop_loss"] = stoploss
-    cash = cash - shares * buy_price
+        # Add to existing position — recompute weighted avg price
+        idx = rows.index[0]
+        cur_shares = float(chatgpt_portfolio.at[idx, "shares"])
+        cur_cost = float(chatgpt_portfolio.at[idx, "cost_basis"])
+
+        new_shares = cur_shares + float(shares)
+        new_cost = cur_cost + float(buy_price * shares)
+        avg_price = new_cost / new_shares if new_shares else 0.0
+
+        chatgpt_portfolio.at[idx, "shares"] = new_shares
+        chatgpt_portfolio.at[idx, "cost_basis"] = new_cost
+        chatgpt_portfolio.at[idx, "buy_price"] = avg_price
+        chatgpt_portfolio.at[idx, "stop_loss"] = float(stoploss)
+
+    # Deduct cash
+    cash -= shares * buy_price
     print(f"Manual buy for {ticker} complete!")
     return cash, chatgpt_portfolio
+
 
 
 def log_manual_sell(
