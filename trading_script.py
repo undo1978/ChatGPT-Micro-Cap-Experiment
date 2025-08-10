@@ -456,7 +456,6 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     portfolio_dict: list[dict[str, object]] = chatgpt_portfolio.to_dict(orient="records")
 
     print(f"prices and updates for {today}")
-    time.sleep(1)
     for stock in portfolio_dict + [{"ticker": "^RUT"}] + [{"ticker": "IWO"}] + [{"ticker": "XBI"}]:
         ticker = stock["ticker"]
         try:
@@ -477,42 +476,51 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
         print(f"percent change from the day before: {percent_change:.2f}%")
     chatgpt_df = pd.read_csv(PORTFOLIO_CSV)
 
-    # Filter TOTAL rows and get latest equity
-    chatgpt_totals = chatgpt_df[chatgpt_df["Ticker"] == "TOTAL"].copy()
-    chatgpt_totals["Date"] = pd.to_datetime(chatgpt_totals["Date"])
-    final_date = chatgpt_totals["Date"].max()
-    final_value = chatgpt_totals[chatgpt_totals["Date"] == final_date]
-    final_equity = float(final_value["Total Equity"].values[0])
-    equity_series = chatgpt_totals["Total Equity"].astype(float).reset_index(drop=True)
+# Use only TOTAL rows, sorted by date
+    totals = chatgpt_df[chatgpt_df["Ticker"] == "TOTAL"].copy()
+    totals["Date"] = pd.to_datetime(totals["Date"])
+    totals = totals.sort_values("Date")
+    final_equity = float(totals.iloc[-1]["Total Equity"])
+    equity = totals["Total Equity"].astype(float).reset_index(drop=True)
 
-    # Daily returns
-    daily_pct = equity_series.pct_change().dropna()
+# Daily simple returns
+    r = equity.pct_change().dropna()
+    n_days = len(r)
 
-    total_return = (equity_series.iloc[-1] - equity_series.iloc[0]) / equity_series.iloc[0] 
-
-    # Number of total trading days
-    n_days = len(chatgpt_totals)
-    # Risk-free return over total trading period (assuming 4.5% risk-free rate)
+# Config
     rf_annual = 0.045
-    rf_period = (1 + rf_annual) ** (n_days / 252) - 1
-    # Standard deviation of daily returns
-    std_daily = daily_pct.std()
-    negative_pct = daily_pct[daily_pct < 0]
-    negative_std = negative_pct.std()
-    # Sharpe Ratio
-    sharpe_total = (total_return - rf_period) / (std_daily * np.sqrt(n_days))
-    sharpe_annualized = (total_return - rf_period) / (std_daily * np.sqrt(252))
-    # Sortino Ratio
-    sortino_total = (total_return - rf_period) / (negative_std * np.sqrt(n_days))
-    sortino_annualized = (total_return - rf_period) / (negative_std * np.sqrt(252))
+
+# Risk-free aligned to frequency and window
+    rf_daily  = (1 + rf_annual)**(1 / 252) - 1
+    rf_period = (1 + rf_daily)**n_days - 1
+
+# Stats
+    mean_daily = r.mean()
+    std_daily  = r.std(ddof=1)
+
+# Downside deviation vs MAR = rf_daily
+    downside = (r - rf_daily).clip(upper=0)
+    downside_std = (downside.pow(2).mean())**0.5
+
+# total return over the window
+    period_return = (1 + r).prod() - 1
+
+# --- Sharpe ---
+    sharpe_period = (period_return - rf_period) / (std_daily * np.sqrt(n_days))
+    sharpe_annual = ((mean_daily - rf_daily) / std_daily) * np.sqrt(252)
+
+# --- Sortino ---
+    sortino_period = (period_return - rf_period) / (downside_std * np.sqrt(n_days))
+    sortino_annual = ((mean_daily - rf_daily) / downside_std) * np.sqrt(252)
 
     # Output
-    print(f"Total Sharpe Ratio over {n_days} days: {sharpe_total:.4f}")
-    print(f"Total Sortino Ratio over {n_days} days: {sortino_total:.4f}")
-    print(f"Annualized Sharpe Ratio: {sharpe_annualized:.4f}")
-    print(f"Annualized Sortino Ratio: {sortino_annualized:.4f}")
+    print(f"Total Sharpe Ratio over {n_days} days: {sharpe_period:.4f}")
+    print(f"Total Sortino Ratio over {n_days} days: {sortino_period:.4f}")
+    print(f"Annualized Sharpe Ratio: {sharpe_annual:.4f}")
+    print(f"Annualized Sortino Ratio: {sortino_annual:.4f}")
     print(f"Latest ChatGPT Equity: ${final_equity:.2f}")
     # Get S&P 500 data
+    final_date = totals.loc[totals.index[-1], "Date"]
     spx = yf.download("^SPX", start="2025-06-27", end=final_date + pd.Timedelta(days=1), progress=False)
     spx = cast(pd.DataFrame, spx)
     spx = spx.reset_index()
@@ -586,9 +594,11 @@ def load_latest_portfolio_state(
     non_total["Date"] = pd.to_datetime(non_total["Date"])
 
     latest_date = non_total["Date"].max()
-
+    print(latest_date)
     # Get all tickers from the latest date
     latest_tickers = non_total[non_total["Date"] == latest_date].copy()
+    sold_mask = latest_tickers["Action"].astype(str).str.startswith("SELL")
+    latest_tickers = latest_tickers[~sold_mask].copy()
     latest_tickers.drop(columns=["Date", "Cash Balance", "Total Equity", "Action", "Current Price", "PnL", "Total Value"], inplace=True)
     latest_tickers.rename(columns={"Cost Basis": "cost_basis", "Buy Price": "buy_price", "Shares": "shares", "Ticker": "ticker", "Stop Loss": "stop_loss"}, inplace=True)
     print(latest_tickers)
@@ -597,5 +607,6 @@ def load_latest_portfolio_state(
     df["Date"] = pd.to_datetime(df["Date"])
     latest = df.sort_values("Date").iloc[-1]
     cash = float(latest["Cash Balance"])
+    print(latest_tickers)
     return latest_tickers, cash
 
