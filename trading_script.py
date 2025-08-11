@@ -539,7 +539,7 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
         "Here are is your update for today. You can make any changes you see fit (if necessary),\n"
         "but you may not use deep research. You do have to ask premissons for any changes, as you have full control.\n"
         "You can however use the Internet and check current prices for potenial buys."
-        "*"
+        "*paste all the above into ChatGPT*"
     )
 
 
