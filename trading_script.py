@@ -537,9 +537,10 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     print(
         "Today's update:\n"
         "You have complete control over every decision. Make any changes you believe are beneficial—no approval required.\n"
-        "Deep, time-intensive research is not permitted.\n"
-        "You may use the internet to check current prices (and related up-to-date info) for potential buys.\n"
+        "Deep research is not permitted.\n"
         "Act at your discretion to achieve the best outcome.\n"
+        "If you do not make a clear indiction you want to change position IMMEDIATELY after this message, portfolio will remain unchanged for tommorow.\n"
+        "You are encouraged to use the internet to check current prices (and related up-to-date info) for potential buys.\n"
         "*Paste everything above into ChatGPT*"
     )
 
