@@ -595,19 +595,16 @@ def load_latest_portfolio_state(
     non_total["Date"] = pd.to_datetime(non_total["Date"])
 
     latest_date = non_total["Date"].max()
-    print(latest_date)
     # Get all tickers from the latest date
     latest_tickers = non_total[non_total["Date"] == latest_date].copy()
     sold_mask = latest_tickers["Action"].astype(str).str.startswith("SELL")
     latest_tickers = latest_tickers[~sold_mask].copy()
     latest_tickers.drop(columns=["Date", "Cash Balance", "Total Equity", "Action", "Current Price", "PnL", "Total Value"], inplace=True)
     latest_tickers.rename(columns={"Cost Basis": "cost_basis", "Buy Price": "buy_price", "Shares": "shares", "Ticker": "ticker", "Stop Loss": "stop_loss"}, inplace=True)
-    print(latest_tickers)
     latest_tickers = latest_tickers.reset_index(drop=True).to_dict(orient='records')
     df = df[df["Ticker"] == "TOTAL"]  # Only the total summary rows
     df["Date"] = pd.to_datetime(df["Date"])
     latest = df.sort_values("Date").iloc[-1]
     cash = float(latest["Cash Balance"])
-    print(latest_tickers)
     return latest_tickers, cash
 
