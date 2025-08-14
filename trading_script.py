@@ -534,12 +534,13 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     print("today's portfolio:")
     print(chatgpt_portfolio)
     print(f"cash balance: {cash}")
-
     print(
-        "Here are is your update for today. You can make any changes you see fit (if necessary),\n"
-        "but you may not use deep research. You do have to ask premissons for any changes, as you have full control.\n"
-        "You can however use the Internet and check current prices for potenial buys.\n"
-        "*paste all the above into ChatGPT*"
+        "Today's update:\n"
+        "You have complete control over every decision. Make any changes you believe are beneficial—no approval required.\n"
+        "Deep, time-intensive research is not permitted.\n"
+        "You may use the internet to check current prices (and related up-to-date info) for potential buys.\n"
+        "Act at your discretion to achieve the best outcome.\n"
+        "*Paste everything above into ChatGPT*"
     )
 
 def main(file: str, data_dir: Path | None = None) -> None:
