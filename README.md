@@ -2,7 +2,7 @@
 Welcome to the repo behind my 6-month live trading experiment where ChatGPT manages a real-money micro-cap portfolio.
 
 # The Concept
-Everyday, I kept seeing the same ad about having an some A.I. pick undervalued stocks. It was obvious it was trying to get me to subscribe to some garbage, so I just rolled my eyes. 
+Everyday, I kept seeing the same ad about having some A.I. pick undervalued stocks. It was obvious it was trying to get me to subscribe to some garbage, so I just rolled my eyes. 
 Then I started wondering, "How well would that actually work?".
 
 So, starting with just $100, I wanted to answer a simple but powerful question:
@@ -17,7 +17,7 @@ So, starting with just $100, I wanted to answer a simple but powerful question:
 
 - Everyweek I allow it to use deep research to reevaluate it's account.
 
-- I track and publish performance data weekly on my blog. [SubStack Link](https://nathanbsmith729.substack.com)
+- I track and publish performance data weekly on my blog: [Here](https://nathanbsmith729.substack.com)
 
   ## Research & Documentation
 
@@ -31,14 +31,14 @@ So, starting with just $100, I wanted to answer a simple but powerful question:
 
 - [Starting Your Own](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/blob/main/Start%20Your%20Own/README.md)
 
--  [Markdown Research Summaries (MD)](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/tree/main/Weekly%20Deep%20Research%20(MD))
-- [Weekly Deep Research Reports (PDF)](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/tree/main/Weekly%20Deep%20Research%20(PDF))
+-  [Research Summaries (MD)](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/tree/main/Weekly%20Deep%20Research%20(MD))
+- [Full Deep Research Reports (PDF)](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/tree/main/Weekly%20Deep%20Research%20(PDF))
   
 # Performance Example (6/30 – 7/25)
 
 ---
-
-![Week 4 Performance](%286-30%20-%208-15%29%20Results.png)
+<!-- To update dates (%286-30%20-%208-15%29%20Results), change the "8-15" in the middle. -->
+![Week 7 Performance](%286-30%20-%208-15%29%20Results.png)
 
 ---
 - Currently stomping on the S&P 500.
@@ -66,7 +66,7 @@ Pandas + yFinance for data & logic
 
 Matplotlib for visualizations
 
-ChatGPT for decision-making
+ChatGPT-5 for decision-making
 
 # Installation
 To run the scripts locally, install the Python dependencies:
@@ -85,4 +85,4 @@ Updates are posted weekly on my blog — more coming soon!
 One final shameless plug: (https://substack.com/@nathanbsmith?utm_source=edit-profile-page)
 
 Find a mistake in the logs or have advice?
-Please Reach out here: nathanbsmith.business@gmail.com
+Please reach out here: nathanbsmith.business@gmail.com
