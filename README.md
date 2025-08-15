@@ -38,10 +38,10 @@ So, starting with just $100, I wanted to answer a simple but powerful question:
 
 ---
 
-![Week 4 Performance](%286-30%20-%207-25%29%20Results.png)
+![Week 4 Performance](%286-30%20-%208-15%29%20Results.png)
 
 ---
-- Currently stomping on the Russell 2K.
+- Currently stomping on the S&P 500.
 
 # Features of This Repo
 Live trading scripts — Used to evaluate prices and update holdings daily
