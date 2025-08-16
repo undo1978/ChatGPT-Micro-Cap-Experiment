@@ -13,14 +13,12 @@ import pandas as pd
 import yfinance as yf
 from typing import Any, cast
 import os
-import time
 
 # Shared file locations
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR  # Save files in the same folder as this script
 PORTFOLIO_CSV = DATA_DIR / "chatgpt_portfolio_update.csv"
 TRADE_LOG_CSV = DATA_DIR / "chatgpt_trade_log.csv"
-
 
 def set_data_dir(data_dir: Path) -> None:
     """Update global paths for portfolio and trade logs.
@@ -37,11 +35,6 @@ def set_data_dir(data_dir: Path) -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
     PORTFOLIO_CSV = DATA_DIR / "chatgpt_portfolio_update.csv"
     TRADE_LOG_CSV = DATA_DIR / "chatgpt_trade_log.csv"
-
-# Today's date reused across logs
-today = datetime.today().strftime("%Y-%m-%d")
-now = datetime.now()
-day = now.weekday()
 
 
 
@@ -71,7 +64,9 @@ def process_portfolio(
     tuple[pd.DataFrame, float]
         Updated portfolio and cash balance.
     """
-    print(portfolio)
+    today = datetime.today().strftime("%Y-%m-%d")
+    now = datetime.now()
+    day = now.weekday()
     if isinstance(portfolio, pd.DataFrame):
         portfolio_df = portfolio.copy()
     elif isinstance(portfolio, (dict, list)):
@@ -83,17 +78,18 @@ def process_portfolio(
     total_value = 0.0
     total_pnl = 0.0
 
-    if day == 6 or day == 5 and interactive:
-        check = input(
-            """Today is currently a weekend, so markets were never open.
-This will cause the program to calculate data from the last day (usually Friday), and save it as today.
-Are you sure you want to do this? To exit, enter 1. """
-        )
-        if check == "1":
-            raise SystemError("Exitting program...")
-
+    if (day == 6 or day == 5) and interactive:
+        print("Today is currently a weekend. Program will use Friday's stock data. If this is wrong, check date logs.")
+        # set weekend days as Friday
+        today = pd.to_datetime(today).date()
+        if day == 6: # sunday
+            today -= pd.Timedelta(days=2)
+        if day == 5: # saturday
+            today -= pd.Timedelta(days=1)
+        
     if interactive:
         while True:
+            print(portfolio_df)
             action = input(
                 f""" You have {cash} in cash.
 Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press Enter to continue: """
@@ -137,7 +133,6 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                     )
                 continue
             break
-    print(portfolio_df)
     for _, stock in portfolio_df.iterrows():
         ticker = stock["ticker"]
         shares = int(stock["shares"])
@@ -218,13 +213,12 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
     df = pd.DataFrame(results)
     if PORTFOLIO_CSV.exists():
         existing = pd.read_csv(PORTFOLIO_CSV)
-        existing = existing[existing["Date"] != today]
+        existing = existing[existing["Date"] != str(today)]
         print("Saving results to CSV...")
-        time.sleep(1)
         df = pd.concat([existing, df], ignore_index=True)
 
     df.to_csv(PORTFOLIO_CSV, index=False)
-    return portfolio_df, cash
+    return portfolio_df, cash,
 
 
 def log_sell(
@@ -455,11 +449,20 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     """Print daily price updates and performance metrics."""
     portfolio_dict: list[dict[str, object]] = chatgpt_portfolio.to_dict(orient="records")
 
+    today = datetime.today().strftime("%Y-%m-%d")
+    now = datetime.now()
+    day = now.weekday()
+
+    if day == "5":
+        today = pd.to_datetime(today).date() - pd.Timedelta(days=1)
+    if day == "6":
+        today = pd.to_datetime(today).date() - pd.Timedelta(days=2)
+
     print(f"prices and updates for {today}")
     for stock in portfolio_dict + [{"ticker": "^RUT"}] + [{"ticker": "IWO"}] + [{"ticker": "XBI"}]:
         ticker = stock["ticker"]
         try:
-            data = yf.download(ticker, period="2d", progress=False)
+            data = yf.download(ticker, period="2d", progress=False, auto_adjust=True)
             data = cast(pd.DataFrame, data)
             if data.empty or len(data) < 2:
                 print(f"Data for {ticker} was empty or incomplete.")
