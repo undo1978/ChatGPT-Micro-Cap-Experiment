@@ -446,106 +446,225 @@ If this is a mistake, enter 1. """
 
 
 def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
-    """Print daily price updates and performance metrics."""
+    """Print daily price updates and performance metrics (incl. Beta & Alpha) with neat formatting."""
     portfolio_dict: list[dict[str, object]] = chatgpt_portfolio.to_dict(orient="records")
 
+    # Date handling (use Friday on weekends)
     today = datetime.today().strftime("%Y-%m-%d")
-    now = datetime.now()
-    day = now.weekday()
+    dow = datetime.now().weekday()  # 0=Mon .. 6=Sun
+    if dow == 5:  # Sat
+        today = (pd.to_datetime(today).date() - pd.Timedelta(days=1)).isoformat()
+    elif dow == 6:  # Sun
+        today = (pd.to_datetime(today).date() - pd.Timedelta(days=2)).isoformat()
 
-    if day == "5":
-        today = pd.to_datetime(today).date() - pd.Timedelta(days=1)
-    if day == "6":
-        today = pd.to_datetime(today).date() - pd.Timedelta(days=2)
-
-    print(f"prices and updates for {today}")
-    for stock in portfolio_dict + [{"ticker": "^RUT"}] + [{"ticker": "IWO"}] + [{"ticker": "XBI"}]:
+    # -------- Collect daily ticker updates (pretty table) --------
+    rows = []
+    header = ["Ticker", "Close", "% Chg", "Volume"]
+    for stock in portfolio_dict + [{"ticker": "^RUT"}, {"ticker": "IWO"}, {"ticker": "XBI"}]:
         ticker = stock["ticker"]
         try:
             data = yf.download(ticker, period="2d", progress=False, auto_adjust=True)
             data = cast(pd.DataFrame, data)
             if data.empty or len(data) < 2:
-                print(f"Data for {ticker} was empty or incomplete.")
+                rows.append([ticker, "—", "—", "—"])
                 continue
-            price = float(data["Close"].iloc[-1].item())
-            last_price = float(data["Close"].iloc[-2].item())
+
+            # Use .item() to avoid FutureWarning
+            price = data["Close"].iloc[-1]
+            last_price = data["Close"].iloc[-2]
+            volume = data["Volume"].iloc[-1]
+
+            price = float(price.item() if hasattr(price, "item") else float(price))
+            last_price = float(last_price.item() if hasattr(last_price, "item") else float(last_price))
+            volume = float(volume.item() if hasattr(volume, "item") else float(volume))
 
             percent_change = ((price - last_price) / last_price) * 100
-            volume = float(data["Volume"].iloc[-1].item())
+            rows.append([ticker, f"{price:,.2f}", f"{percent_change:+.2f}%", f"{int(volume):,}"])
         except Exception as e:
             raise Exception(f"Download for {ticker} failed. {e} Try checking internet connection.")
-        print(f"{ticker} closing price: {price:.2f}")
-        print(f"{ticker} volume for today: ${volume:,}")
-        print(f"percent change from the day before: {percent_change:.2f}%")
+
+    # Read portfolio history
     chatgpt_df = pd.read_csv(PORTFOLIO_CSV)
 
-# Use only TOTAL rows, sorted by date
+    # Use only TOTAL rows, sorted by date
     totals = chatgpt_df[chatgpt_df["Ticker"] == "TOTAL"].copy()
+    starting_equity = float(totals.loc[totals.index[0],"Total Equity"])
+    if totals.empty:
+        # Minimal report if no totals yet
+        print("\n" + "=" * 64)
+        print(f"Daily Results — {today}")
+        print("=" * 64)
+        print("\n[ Price & Volume ]")
+        colw = [10, 12, 9, 15]
+        print(f"{header[0]:<{colw[0]}} {header[1]:>{colw[1]}} {header[2]:>{colw[2]}} {header[3]:>{colw[3]}}")
+        print("-" * sum(colw) + "-" * 3)
+        for r in rows:
+            print(f"{str(r[0]):<{colw[0]}} {str(r[1]):>{colw[1]}} {str(r[2]):>{colw[2]}} {str(r[3]):>{colw[3]}}")
+        print("\n[ Portfolio Snapshot ]")
+        print(chatgpt_portfolio)
+        print(f"Cash balance: ${cash:,.2f}")
+        return
+
     totals["Date"] = pd.to_datetime(totals["Date"])
     totals = totals.sort_values("Date")
+
     final_equity = float(totals.iloc[-1]["Total Equity"])
-    equity = totals["Total Equity"].astype(float).reset_index(drop=True)
+    equity_series = totals.set_index("Date")["Total Equity"].astype(float).sort_index()
 
-# Daily simple returns
-    r = equity.pct_change().dropna()
+    # --- Max Drawdown ---
+    running_max = equity_series.cummax()
+    drawdowns = (equity_series / running_max) - 1.0
+    max_drawdown = drawdowns.min()  # most negative value
+    mdd_date = drawdowns.idxmin()
+
+    # Daily simple returns (portfolio)
+    r = equity_series.pct_change().dropna()
     n_days = len(r)
+    if n_days < 2:
+        print("\n" + "=" * 64)
+        print(f"Daily Results — {today}")
+        print("=" * 64)
+        print("\n[ Price & Volume ]")
+        colw = [10, 12, 9, 15]
+        print(f"{header[0]:<{colw[0]}} {header[1]:>{colw[1]}} {header[2]:>{colw[2]}} {header[3]:>{colw[3]}}")
+        print("-" * sum(colw) + "-" * 3)
+        for rrow in rows:
+            print(f"{str(rrow[0]):<{colw[0]}} {str(rrow[1]):>{colw[1]}} {str(rrow[2]):>{colw[2]}} {str(rrow[3]):>{colw[3]}}")
+        print("\n[ Portfolio Snapshot ]")
+        print(chatgpt_portfolio)
+        print(f"Cash balance: ${cash:,.2f}")
+        print(f"Latest ChatGPT Equity: ${final_equity:,.2f}")
+        print(f"Maximum Drawdown: {max_drawdown:.2%} (on {mdd_date.date()})")
+        return
 
-# Config
+    # Risk-free config
     rf_annual = 0.045
+    rf_daily = (1 + rf_annual) ** (1 / 252) - 1
+    rf_period = (1 + rf_daily) ** n_days - 1
 
-# Risk-free aligned to frequency and window
-    rf_daily  = (1 + rf_annual)**(1 / 252) - 1
-    rf_period = (1 + rf_daily)**n_days - 1
-
-# Stats
+    # Stats
     mean_daily = r.mean()
-    std_daily  = r.std(ddof=1)
+    std_daily = r.std(ddof=1)
 
-# Downside deviation vs MAR = rf_daily
+    # Downside deviation (MAR = rf_daily)
     downside = (r - rf_daily).clip(upper=0)
-    downside_std = (downside.pow(2).mean())**0.5
+    downside_std = float((downside.pow(2).mean()) ** 0.5) if not downside.empty else np.nan
 
-# total return over the window
-    period_return = (1 + r).prod() - 1
+    # Total return over the window
+    period_return = float((1 + r).prod() - 1)
 
-# --- Sharpe ---
-    sharpe_period = (period_return - rf_period) / (std_daily * np.sqrt(n_days))
-    sharpe_annual = ((mean_daily - rf_daily) / std_daily) * np.sqrt(252)
+    # Sharpe / Sortino
+    sharpe_period = (period_return - rf_period) / (std_daily * np.sqrt(n_days)) if std_daily > 0 else np.nan
+    sharpe_annual = ((mean_daily - rf_daily) / std_daily) * np.sqrt(252) if std_daily > 0 else np.nan
+    sortino_period = (period_return - rf_period) / (downside_std * np.sqrt(n_days)) if downside_std and downside_std > 0 else np.nan
+    sortino_annual = ((mean_daily - rf_daily) / downside_std) * np.sqrt(252) if downside_std and downside_std > 0 else np.nan
 
-# --- Sortino ---
-    sortino_period = (period_return - rf_period) / (downside_std * np.sqrt(n_days))
-    sortino_annual = ((mean_daily - rf_daily) / downside_std) * np.sqrt(252)
+    # -------- CAPM: Beta & Alpha (vs ^GSPC) --------
+    start_date = equity_series.index.min() - pd.Timedelta(days=1)
+    end_date = equity_series.index.max() + pd.Timedelta(days=1)
 
-    # Output
-    print(f"Total Sharpe Ratio over {n_days} days: {sharpe_period:.4f}")
-    print(f"Total Sortino Ratio over {n_days} days: {sortino_period:.4f}")
-    print(f"Annualized Sharpe Ratio: {sharpe_annual:.4f}")
-    print(f"Annualized Sortino Ratio: {sortino_annual:.4f}")
-    print(f"Latest ChatGPT Equity: ${final_equity:.2f}")
-    # Get S&P 500 data
-    final_date = totals.loc[totals.index[-1], "Date"]
-    spx = yf.download("^SPX", start="2025-06-27", end=final_date + pd.Timedelta(days=1), progress=False)
+    spx = yf.download("^GSPC", start=start_date, end=end_date, progress=False, auto_adjust=True)
     spx = cast(pd.DataFrame, spx)
-    spx = spx.reset_index()
 
-    # Normalize to $100
-    initial_price = spx["Close"].iloc[0].item()
-    price_now = spx["Close"].iloc[-1].item()
-    scaling_factor = 100 / initial_price
-    spx_value = price_now * scaling_factor
-    print(f"$100 Invested in the S&P 500: ${spx_value:.2f}")
-    print("today's portfolio:")
+    beta = np.nan
+    alpha_annual = np.nan
+    r2 = np.nan
+    n_obs = 0
+
+    if not spx.empty and len(spx) >= 2:
+        spx = spx.reset_index().set_index("Date").sort_index()
+        mkt_ret = spx["Close"].astype(float).pct_change().dropna()
+
+        # Align portfolio & market returns
+        common_idx = r.index.intersection(mkt_ret.index)
+        if len(common_idx) >= 2:
+            rp = (r.reindex(common_idx).astype(float) - rf_daily)   # portfolio excess
+            rm = (mkt_ret.reindex(common_idx).astype(float) - rf_daily)  # market excess
+
+            # Ensure 1-D numpy arrays
+            x = np.asarray(rm.values, dtype=float).ravel()
+            y = np.asarray(rp.values, dtype=float).ravel()
+
+            n_obs = x.size
+            rm_std = float(np.std(x, ddof=1)) if n_obs > 1 else 0.0
+            if rm_std > 0:
+                # OLS: y = beta * x + alpha_daily
+                beta, alpha_daily = np.polyfit(x, y, 1)
+                alpha_annual = (1 + float(alpha_daily)) ** 252 - 1
+
+                # Compute R²
+                corr = np.corrcoef(x, y)[0, 1]
+                r2 = float(corr ** 2)
+
+    # $100 normalized S&P 500 over same window
+    spx_norm = yf.download("^GSPC",
+                           start=equity_series.index.min(),
+                           end=equity_series.index.max() + pd.Timedelta(days=1),
+                           progress=False, auto_adjust=True)
+    spx_norm = cast(pd.DataFrame, spx_norm)
+    spx_value = np.nan
+    if not spx_norm.empty:
+        initial_price = spx_norm["Close"].iloc[0]
+        price_now = spx_norm["Close"].iloc[-1]
+        initial_price = float(initial_price.item() if hasattr(initial_price, "item") else float(initial_price))
+        price_now = float(price_now.item() if hasattr(price_now, "item") else float(price_now))
+        spx_value = (100 / initial_price) * price_now
+
+    # -------- Pretty Printing --------
+    print("\n" + "=" * 64)
+    print(f"Daily Results — {today}")
+    print("=" * 64)
+
+    # Price & Volume table
+    print("\n[ Price & Volume ]")
+    colw = [10, 12, 9, 15]
+    print(f"{header[0]:<{colw[0]}} {header[1]:>{colw[1]}} {header[2]:>{colw[2]}} {header[3]:>{colw[3]}}")
+    print("-" * sum(colw) + "-" * 3)
+    for rrow in rows:
+        print(f"{str(rrow[0]):<{colw[0]}} {str(rrow[1]):>{colw[1]}} {str(rrow[2]):>{colw[2]}} {str(rrow[3]):>{colw[3]}}")
+
+    # Performance metrics
+    def fmt_or_na(x, fmt):
+        return (fmt.format(x) if not (x is None or (isinstance(x, float) and np.isnan(x))) else "N/A")
+
+    print("\n[ Risk & Return ]")
+    print(f"{'Max Drawdown:':32} {fmt_or_na(max_drawdown, '{:.2%}'):>15}   on {mdd_date.date()}")
+    print(f"{'Sharpe Ratio (period):':32} {fmt_or_na(sharpe_period, '{:.4f}'):>15}")
+    print(f"{'Sharpe Ratio (annualized):':32} {fmt_or_na(sharpe_annual, '{:.4f}'):>15}")
+    print(f"{'Sortino Ratio (period):':32} {fmt_or_na(sortino_period, '{:.4f}'):>15}")
+    print(f"{'Sortino Ratio (annualized):':32} {fmt_or_na(sortino_annual, '{:.4f}'):>15}")
+
+    print("\n[ CAPM vs Benchmarks ]")
+    if not np.isnan(beta):
+        print(f"{'Beta (daily) vs ^GSPC:':32} {beta:>15.4f}")
+        print(f"{'Alpha (annualized) vs ^GSPC:':32} {alpha_annual:>15.2%}")
+        print(f"{'R² (fit quality):':32} {r2:>15.3f}   {'Obs:':>6} {n_obs}")
+        if n_obs < 60 or (not np.isnan(r2) and r2 < 0.20):
+            print("  Note: Short sample and/or low R² — alpha/beta may be unstable.")
+    else:
+        print("Beta/Alpha: insufficient overlapping data.")
+
+    print("\n[ Snapshot ]")
+    print(f"{'Latest ChatGPT Equity:':32} ${final_equity:>14,.2f}")
+    if not np.isnan(spx_value):
+        print(f"{f'$100 in S&P 500 (same window):':32} ${spx_value:>14,.2f}")
+
+    print(f"{'Cash Balance:':32} ${cash:>14,.2f}")
+
+    print("\n[ Holdings ]")
     print(chatgpt_portfolio)
-    print(f"cash balance: {cash}")
+
+    print("\n[ Operator Note ]")
     print(
-        "Today's update:\n"
         "You have complete control over every decision. Make any changes you believe are beneficial—no approval required.\n"
-        "Deep research is not permitted.\n"
-        "Act at your discretion to achieve the best outcome.\n"
-        "If you do not make a clear indiction you want to change position IMMEDIATELY after this message, portfolio will remain unchanged for tommorow.\n"
+        "Deep research is not permitted. Act at your discretion to achieve the best outcome.\n"
+        "If you do not make a clear indication to change positions immediately after this message, the portfolio remains unchanged for tomorrow.\n"
         "You are encouraged to use the internet to check current prices (and related up-to-date info) for potential buys.\n"
         "*Paste everything above into ChatGPT*"
     )
+
+
+
 
 def main(file: str, data_dir: Path | None = None) -> None:
     """Run the trading script.
