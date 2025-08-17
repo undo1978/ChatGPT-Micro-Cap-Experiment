@@ -1,6 +1,8 @@
 # ChatGPT Micro-Cap Experiment
 Welcome to the repo behind my 6-month live trading experiment where ChatGPT manages a real-money micro-cap portfolio.
 
+### FRONTEND HELP NEEDED!! (Contributing)[https://github.com/LuckyOne7777/ChatGPT-Portfolio-Overhaul/blob/main/CONTRIBUTING.md]
+
 # The Concept
 Every day, I kept seeing the same ad about having some A.I. pick undervalued stocks. It was obvious it was trying to get me to subscribe to some garbage, so I just rolled my eyes.  
 Then I started wondering, "How well would that actually work?"
