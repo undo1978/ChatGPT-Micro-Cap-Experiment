@@ -608,7 +608,8 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
         price_now = spx_norm["Close"].iloc[-1]
         initial_price = float(initial_price.item() if hasattr(initial_price, "item") else float(initial_price))
         price_now = float(price_now.item() if hasattr(price_now, "item") else float(price_now))
-        spx_value = (100 / initial_price) * price_now
+        starting_equity = float(input("what was your starting equity? "))
+        spx_value = (starting_equity / initial_price) * price_now
 
     # -------- Pretty Printing --------
     print("\n" + "=" * 64)
@@ -647,7 +648,7 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     print("\n[ Snapshot ]")
     print(f"{'Latest ChatGPT Equity:':32} ${final_equity:>14,.2f}")
     if not np.isnan(spx_value):
-        print(f"{f'$100 in S&P 500 (same window):':32} ${spx_value:>14,.2f}")
+        print(f"{f'${starting_equity} in S&P 500 (same window):':32} ${spx_value:>14,.2f}")
 
     print(f"{'Cash Balance:':32} ${cash:>14,.2f}")
 
