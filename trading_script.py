@@ -20,6 +20,15 @@ DATA_DIR = SCRIPT_DIR  # Save files in the same folder as this script
 PORTFOLIO_CSV = DATA_DIR / "chatgpt_portfolio_update.csv"
 TRADE_LOG_CSV = DATA_DIR / "chatgpt_trade_log.csv"
 
+def check_weekend() -> str:
+    today = datetime.today().strftime("%Y-%m-%d")
+    dow = datetime.now().weekday()  # 0=Mon .. 6=Sun
+    if dow == 5:  # Sat
+        today = (pd.to_datetime(today).date() - pd.Timedelta(days=1)).isoformat()
+    elif dow == 6:  # Sun
+        today = (pd.to_datetime(today).date() - pd.Timedelta(days=2)).isoformat()
+    return today
+
 def set_data_dir(data_dir: Path) -> None:
     """Update global paths for portfolio and trade logs.
 
@@ -82,10 +91,7 @@ def process_portfolio(
         print("Today is currently a weekend. Program will use Friday's stock data. If this is wrong, check date logs.")
         # set weekend days as Friday
         today = pd.to_datetime(today).date()
-        if day == 6: # sunday
-            today -= pd.Timedelta(days=2)
-        if day == 5: # saturday
-            today -= pd.Timedelta(days=1)
+        today = check_weekend()
         
     if interactive:
         while True:
@@ -230,6 +236,7 @@ def log_sell(
     portfolio: pd.DataFrame,
 ) -> pd.DataFrame:
     """Record a stop-loss sale in ``TRADE_LOG_CSV`` and remove the ticker."""
+    today = check_weekend()
     log = {
         "Date": today,
         "Ticker": ticker,
@@ -262,11 +269,13 @@ def log_manual_buy(
 ) -> tuple[float, pd.DataFrame]:
     """Log a manual purchase and append to the portfolio."""
 
+    today = check_weekend()
     if interactive:
         check = input(
             f"""You are currently trying to buy {shares} shares of {ticker} with a price of {buy_price} and a stoploss of {stoploss}.
         If this a mistake, type "1". """
         )
+    
         if check == "1":
             print("Returning...")
             return cash, chatgpt_portfolio
@@ -375,15 +384,16 @@ def log_manual_sell(
     interactive:
         When ``False`` no interactive confirmation is requested.
     """
+    today = check_weekend()
     if interactive:
         reason = input(
             f"""You are currently trying to sell {shares_sold} shares of {ticker} at a price of {sell_price}.
 If this is a mistake, enter 1. """
         )
 
-        if reason == "1":
-            print("Returning...")
-            return cash, chatgpt_portfolio
+    if reason == "1":
+        print("Returning...")
+        return cash, chatgpt_portfolio
     elif reason is None:
         reason = ""
     if ticker not in chatgpt_portfolio["ticker"].values:
@@ -449,13 +459,7 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     """Print daily price updates and performance metrics (incl. Beta & Alpha) with neat formatting."""
     portfolio_dict: list[dict[str, object]] = chatgpt_portfolio.to_dict(orient="records")
 
-    # Date handling (use Friday on weekends)
-    today = datetime.today().strftime("%Y-%m-%d")
-    dow = datetime.now().weekday()  # 0=Mon .. 6=Sun
-    if dow == 5:  # Sat
-        today = (pd.to_datetime(today).date() - pd.Timedelta(days=1)).isoformat()
-    elif dow == 6:  # Sun
-        today = (pd.to_datetime(today).date() - pd.Timedelta(days=2)).isoformat()
+    today = check_weekend()
 
     # -------- Collect daily ticker updates (pretty table) --------
     rows = []
@@ -678,6 +682,7 @@ def main(file: str, data_dir: Path | None = None) -> None:
         Directory where trade and portfolio CSVs will be stored.
     """
     chatgpt_portfolio, cash = load_latest_portfolio_state(file)
+    print(file)
     if data_dir is not None:
         set_data_dir(data_dir)
 
