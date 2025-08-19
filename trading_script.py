@@ -13,12 +13,37 @@ import pandas as pd
 import yfinance as yf
 from typing import Any, cast
 import os
+import pkg_resources
 
 # Shared file locations
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR  # Save files in the same folder as this script
 PORTFOLIO_CSV = DATA_DIR / "chatgpt_portfolio_update.csv"
 TRADE_LOG_CSV = DATA_DIR / "chatgpt_trade_log.csv"
+
+
+def check_versions() -> None:
+    REQUIRED = {
+    "numpy": "1.26.4",
+    "pandas": "2.2.2",
+    "yfinance": "0.2.38",
+    "matplotlib": "3.8.4",
+    }
+
+    for pkg, req_version in REQUIRED.items():
+        try:
+            installed_version = pkg_resources.get_distribution(pkg).version
+            if installed_version != req_version:
+                raise RuntimeError(
+                    f"{pkg}=={req_version} required, but {installed_version} installed. "
+                    f"Run: pip install -r requirements.txt"
+                )
+        except pkg_resources.DistributionNotFound:
+            raise RuntimeError(
+                f"{pkg}=={req_version} required but not installed. "
+                f"Run: pip install -r requirements.txt"
+        )
+
 
 def check_weekend() -> str:
     today = datetime.today().strftime("%Y-%m-%d")
@@ -672,7 +697,7 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
 
 
 def main(file: str, data_dir: Path | None = None) -> None:
-    """Run the trading script.
+    """Check verisons, then run the trading script.
 
     Parameters
     ----------
@@ -681,6 +706,7 @@ def main(file: str, data_dir: Path | None = None) -> None:
     data_dir:
         Directory where trade and portfolio CSVs will be stored.
     """
+    check_versions()
     chatgpt_portfolio, cash = load_latest_portfolio_state(file)
     print(file)
     if data_dir is not None:
