@@ -44,7 +44,7 @@ Documents/
 .nuget/
 .ipython/
 .lesshst
-
+.json
 # === IDEs ===
 .idea/
 

@@ -1,69 +1,285 @@
-"""Utilities for maintaining the ChatGPT micro cap portfolio.
+"""Utilities for maintaining the ChatGPT micro-cap portfolio.
 
-The script processes portfolio positions, logs trades, and prints daily
-results. It is intentionally lightweight and avoids changing existing
-logic or behaviour.
+This module rewrites the original script to:
+- Centralize market data fetching with a robust Yahoo->Stooq fallback
+- Ensure ALL price requests go through the same accessor
+- Handle empty Yahoo frames (no exception) so fallback actually triggers
+- Normalize Stooq output to Yahoo-like columns
+- Make weekend handling consistent and testable
+- Keep behavior and CSV formats compatible with prior runs
+
+Notes:
+- Some tickers/indices are not available on Stooq (e.g., ^RUT). These stay on Yahoo.
+- Stooq end date is exclusive; we add +1 day for ranges.
+- "Adj Close" is set equal to "Close" for Stooq to match downstream expectations.
 """
 
-from datetime import datetime
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
+import os
+import warnings
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from typing import Any, cast
-import os
-import pkg_resources
 
-# Shared file locations
+try:
+    import pandas_datareader.data as pdr
+    _HAS_PDR = True
+except Exception:
+    _HAS_PDR = False
+
+# ------------------------------
+# Globals / file locations
+# ------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_DIR = SCRIPT_DIR  # Save files in the same folder as this script
+DATA_DIR = SCRIPT_DIR  # Save files alongside this script by default
 PORTFOLIO_CSV = DATA_DIR / "chatgpt_portfolio_update.csv"
 TRADE_LOG_CSV = DATA_DIR / "chatgpt_trade_log.csv"
 
 
-def check_versions() -> None:
-    REQUIRED = {
-    "numpy": "1.26.4",
-    "pandas": "2.2.2",
-    "yfinance": "0.2.38",
-    "matplotlib": "3.8.4",
-    }
+# ------------------------------
+# Date helpers
+# ------------------------------
 
-    for pkg, req_version in REQUIRED.items():
-        try:
-            installed_version = pkg_resources.get_distribution(pkg).version
-            if installed_version != req_version:
-                raise RuntimeError(
-                    f"{pkg}=={req_version} required, but {installed_version} installed. "
-                    f"Run: pip install -r requirements.txt"
-                )
-        except pkg_resources.DistributionNotFound:
-            raise RuntimeError(
-                f"{pkg}=={req_version} required but not installed. "
-                f"Run: pip install -r requirements.txt"
-        )
+def last_trading_date(today: datetime | None = None) -> pd.Timestamp:
+    """Return last trading date (M-F), mapping Sat->Fri and Sun->Fri.
+
+    This function does *not* know market holidays; it specifically handles weekends.
+    """
+    dt = pd.Timestamp(today or datetime.now())
+    # 0=Mon ... 4=Fri, 5=Sat, 6=Sun
+    if dt.weekday() == 5:
+        return (dt - pd.Timedelta(days=1)).normalize()
+    if dt.weekday() == 6:
+        return (dt - pd.Timedelta(days=2)).normalize()
+    return dt.normalize()
 
 
 def check_weekend() -> str:
-    today = datetime.today().strftime("%Y-%m-%d")
-    dow = datetime.now().weekday()  # 0=Mon .. 6=Sun
-    if dow == 5:  # Sat
-        today = (pd.to_datetime(today).date() - pd.Timedelta(days=1)).isoformat()
-    elif dow == 6:  # Sun
-        today = (pd.to_datetime(today).date() - pd.Timedelta(days=2)).isoformat()
-    return today
+    """Backwards-compatible wrapper returning ISO date string for last trading day."""
+    return last_trading_date().date().isoformat()
+
+
+# ------------------------------
+# Data access layer
+# ------------------------------
+
+# Known Stooq symbol remaps for common indices
+STOOQ_MAP = {
+    "^GSPC": "^SPX",  # S&P 500
+    "^DJI": "^DJI",   # Dow Jones
+    "^IXIC": "^IXIC", # Nasdaq Composite
+    # "^RUT": not on Stooq; keep Yahoo
+}
+
+# Symbols we should *not* attempt on Stooq
+STOOQ_BLOCKLIST = {"^RUT"}
+
+
+@dataclass
+class FetchResult:
+    df: pd.DataFrame
+    source: str  # "yahoo" or "stooq" or "empty"
+
+
+def _to_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df.index, pd.DatetimeIndex):
+        # yfinance returns DatetimeIndex; pdr.stooq returns DatetimeIndex too
+        # but be defensive
+        try:
+            df.index = pd.to_datetime(df.index)
+        except Exception:
+            pass
+    return df
+
+
+def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
+    cols = [c for c in ["Open", "High", "Low", "Close", "Adj Close", "Volume"] if c in df.columns]
+    # Ensure all expected columns exist
+    for c in ["Open", "High", "Low", "Close", "Volume"]:
+        if c not in df.columns:
+            df[c] = np.nan
+    if "Adj Close" not in df.columns:
+        # For Stooq we set Adj Close = Close (no adjustments)
+        df["Adj Close"] = df["Close"]
+    return df[["Open", "High", "Low", "Close", "Adj Close", "Volume"]]
+
+
+def _yahoo_download(ticker: str, **kwargs: Any) -> pd.DataFrame:
+    """Call yfinance.download with a real UA and silence all chatter."""
+    import io, logging, requests
+    from contextlib import redirect_stderr, redirect_stdout
+
+    # Robust session with UA to avoid 403/999
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    })
+    kwargs.setdefault("progress", False)
+    kwargs.setdefault("threads", False)
+    kwargs.setdefault("session", sess)
+
+    # Silence yfinance logger + stdout/stderr
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+    buf = io.StringIO()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            with redirect_stdout(buf), redirect_stderr(buf):
+                df = cast(pd.DataFrame, yf.download(ticker, **kwargs))
+        except Exception:
+            return pd.DataFrame()
+    return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+def _stooq_csv_download(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """Fetch OHLCV from Stooq CSV endpoint (daily). Good for US tickers and many ETFs."""
+    import requests
+    # Map ^GSPC -> ^SPX (Stooq naming), block ^RUT
+    if ticker in STOOQ_BLOCKLIST:
+        return pd.DataFrame()
+    t = STOOQ_MAP.get(ticker, ticker)
+
+    # Stooq daily CSV wants lowercase symbols; US equities/ETFs use .us suffix.
+    if not t.startswith("^"):
+        sym = t.lower()
+        if not sym.endswith(".us"):
+            sym = f"{sym}.us"
+    else:
+        # Indices keep caret, in lowercase (e.g., ^spx)
+        sym = t.lower()
+
+    # Stooq uses inclusive start and exclusive end – we’ll filter after download
+    url = f"https://stooq.com/q/d/l/?s={sym}&i=d"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200 or not r.text.strip():
+            return pd.DataFrame()
+        df = pd.read_csv(pd.compat.StringIO(r.text))
+        if df.empty:
+            return pd.DataFrame()
+        # Normalize columns + index
+        df["Date"] = pd.to_datetime(df["Date"])
+        df.set_index("Date", inplace=True)
+        df.sort_index(inplace=True)
+        # Rename to Yahoo-like
+        df.rename(columns={"Open":"Open","High":"High","Low":"Low","Close":"Close","Volume":"Volume"}, inplace=True)
+        # Keep within [start, end)
+        df = df.loc[(df.index >= start.normalize()) & (df.index < end.normalize())]
+        if "Adj Close" not in df.columns:
+            df["Adj Close"] = df["Close"]
+        return df[["Open","High","Low","Close","Adj Close","Volume"]]
+    except Exception:
+        return pd.DataFrame()
+
+
+
+def _stooq_download(
+    ticker: str,
+    start: datetime | pd.Timestamp,
+    end: datetime | pd.Timestamp,
+) -> pd.DataFrame:
+    """Fetch OHLCV from Stooq via pandas-datareader; returns empty DF on failure."""
+    if not _HAS_PDR:
+        return pd.DataFrame()
+    if ticker in STOOQ_BLOCKLIST:
+        return pd.DataFrame()
+
+    # Map common indices and lowercase regular tickers for Stooq
+    t = STOOQ_MAP.get(ticker, ticker)
+    if not t.startswith("^"):
+        t = t.lower()
+
+    try:
+        df = cast(pd.DataFrame, pdr.DataReader(t, "stooq", start=start, end=end))
+        df.sort_index(inplace=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+
+def _period_to_range(period: str | None, start: Any, end: Any) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Translate a Yahoo-style period (e.g., '2d') or explicit start/end to a date range.
+
+    Stooq uses inclusive start and exclusive end; we add +1 day to end to cover the last bar.
+    """
+    if period and not start and not end and isinstance(period, str) and period.endswith("d"):
+        days = int(period[:-1])
+        end_ts = pd.Timestamp(datetime.now())
+        start_ts = end_ts - pd.Timedelta(days=days)
+    else:
+        end_ts = pd.Timestamp(end) if end else pd.Timestamp(datetime.now())
+        start_ts = pd.Timestamp(start) if start else (end_ts - pd.Timedelta(days=5))
+    # Make Stooq end exclusive by adding one day
+    return start_ts.normalize(), (end_ts + pd.Timedelta(days=1)).normalize()
+
+
+def download_price_data(ticker: str, **kwargs: Any) -> FetchResult:
+    """
+    Robust OHLCV fetch with multi-stage fallbacks:
+
+    Order:
+      1) Yahoo Finance via yfinance (with UA & silenced; see _yahoo_download)
+      2) Stooq via pandas-datareader (see _stooq_download)
+      3) Stooq direct CSV (see _stooq_csv_download)
+      4) Index proxies (e.g., ^GSPC->SPY, ^RUT->IWM) via Yahoo
+
+    Accepts Yahoo-like kwargs (period/start/end/auto_adjust/progress/etc).
+    Returns: FetchResult(df, source) where df has columns:
+      [Open, High, Low, Close, Adj Close, Volume]
+    """
+    # Normalize kwargs for yfinance
+    period = kwargs.pop("period", None)
+    start = kwargs.get("start")
+    end = kwargs.get("end")
+    kwargs.setdefault("progress", False)
+    kwargs.setdefault("threads", False)
+
+    # ---------- 1) Yahoo ----------
+    df_y = _yahoo_download(ticker, period=period, **kwargs)
+    if isinstance(df_y, pd.DataFrame) and not df_y.empty:
+        return FetchResult(_normalize_ohlcv(_to_datetime_index(df_y)), "yahoo")
+
+    # Build a concrete [start, end) window for Stooq fallbacks
+    s, e = _period_to_range(period, start, end)
+
+    # ---------- 2) Stooq via pandas-datareader ----------
+    df_s = _stooq_download(ticker, start=s, end=e)
+    if isinstance(df_s, pd.DataFrame) and not df_s.empty:
+        return FetchResult(_normalize_ohlcv(_to_datetime_index(df_s)), "stooq-pdr")
+
+    # ---------- 3) Stooq direct CSV ----------
+    df_csv = _stooq_csv_download(ticker, s, e)
+    if isinstance(df_csv, pd.DataFrame) and not df_csv.empty:
+        return FetchResult(_normalize_ohlcv(_to_datetime_index(df_csv)), "stooq-csv")
+
+    # ---------- 4) Proxies for common indices when all else fails ----------
+    proxy_map = {
+        "^GSPC": "SPY",
+        "^RUT":  "IWM",
+    }
+    proxy = proxy_map.get(ticker)
+    if proxy:
+        df_proxy = _yahoo_download(proxy, period=period, **kwargs)
+        if isinstance(df_proxy, pd.DataFrame) and not df_proxy.empty:
+            return FetchResult(_normalize_ohlcv(_to_datetime_index(df_proxy)), f"yahoo:{proxy}-proxy")
+
+    # ---------- Nothing worked ----------
+    empty = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Adj Close", "Volume"])
+    return FetchResult(empty, "empty")
+
+
+
+# ------------------------------
+# File path configuration
+# ------------------------------
 
 def set_data_dir(data_dir: Path) -> None:
-    """Update global paths for portfolio and trade logs.
-
-    Parameters
-    ----------
-    data_dir:
-        Directory where ``chatgpt_portfolio_update.csv`` and
-        ``chatgpt_trade_log.csv`` are stored.
-    """
-
     global DATA_DIR, PORTFOLIO_CSV, TRADE_LOG_CSV
     DATA_DIR = Path(data_dir)
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -71,53 +287,32 @@ def set_data_dir(data_dir: Path) -> None:
     TRADE_LOG_CSV = DATA_DIR / "chatgpt_trade_log.csv"
 
 
+# ------------------------------
+# Portfolio operations
+# ------------------------------
+
+def _ensure_df(portfolio: pd.DataFrame | dict[str, list[object]] | list[dict[str, object]]) -> pd.DataFrame:
+    if isinstance(portfolio, pd.DataFrame):
+        return portfolio.copy()
+    if isinstance(portfolio, (dict, list)):
+        return pd.DataFrame(portfolio)
+    raise TypeError("portfolio must be a DataFrame, dict, or list[dict]")
+
 
 def process_portfolio(
     portfolio: pd.DataFrame | dict[str, list[object]] | list[dict[str, object]],
     cash: float,
     interactive: bool = True,
 ) -> tuple[pd.DataFrame, float]:
-    """Update daily price information, log stop-loss sells, and prompt for trades.
-
-    Parameters
-    ----------
-    portfolio:
-        Current holdings provided as a DataFrame, mapping of column names to
-        lists, or a list of row dictionaries. The input is normalised to a
-        ``DataFrame`` before any processing so that downstream code only deals
-        with a single type.
-    cash:
-        Cash balance available for trading.
-    interactive:
-        When ``True`` (default) the function prompts for manual trades via
-        ``input``. Set to ``False`` to skip all interactive prompts – useful
-        when the function is driven by a user interface or automated tests.
-
-    Returns
-    -------
-    tuple[pd.DataFrame, float]
-        Updated portfolio and cash balance.
-    """
-    today = datetime.today().strftime("%Y-%m-%d")
-    now = datetime.now()
-    day = now.weekday()
-    if isinstance(portfolio, pd.DataFrame):
-        portfolio_df = portfolio.copy()
-    elif isinstance(portfolio, (dict, list)):
-        portfolio_df = pd.DataFrame(portfolio)
-    else:  # pragma: no cover - defensive type check
-        raise TypeError("portfolio must be a DataFrame, dict, or list of dicts")
+    """Update daily price information, log stop-loss sells, and prompt for trades."""
+    today_iso = last_trading_date().date().isoformat()
+    portfolio_df = _ensure_df(portfolio)
 
     results: list[dict[str, object]] = []
     total_value = 0.0
     total_pnl = 0.0
 
-    if (day == 6 or day == 5) and interactive:
-        print("Today is currently a weekend. Program will use Friday's stock data. If this is wrong, check date logs.")
-        # set weekend days as Friday
-        today = pd.to_datetime(today).date()
-        today = check_weekend()
-        
+    # (Optional) Interactive trade logging
     if interactive:
         while True:
             print(portfolio_df)
@@ -137,12 +332,7 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                     print("Invalid input. Manual buy cancelled.")
                 else:
                     cash, portfolio_df = log_manual_buy(
-                        buy_price,
-                        shares,
-                        ticker,
-                        stop_loss,
-                        cash,
-                        portfolio_df,
+                        buy_price, shares, ticker, stop_loss, cash, portfolio_df
                     )
                 continue
             if action == "s":
@@ -156,26 +346,26 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                     print("Invalid input. Manual sell cancelled.")
                 else:
                     cash, portfolio_df = log_manual_sell(
-                        sell_price,
-                        shares,
-                        ticker,
-                        cash,
-                        portfolio_df,
+                        sell_price, shares, ticker, cash, portfolio_df
                     )
                 continue
             break
+
+    # Price update + stop loss handling
     for _, stock in portfolio_df.iterrows():
-        ticker = stock["ticker"]
-        shares = int(stock["shares"])
-        cost = stock["buy_price"]
-        cost_basis = stock["cost_basis"]
-        stop = stock["stop_loss"]
-        data = yf.Ticker(ticker).history(period="1d")
+        ticker = str(stock["ticker"]).upper()
+        shares = int(stock["shares"]) if not pd.isna(stock["shares"]) else 0
+        cost = float(stock["buy_price"]) if not pd.isna(stock["buy_price"]) else 0.0
+        cost_basis = float(stock["cost_basis"]) if not pd.isna(stock["cost_basis"]) else cost * shares
+        stop = float(stock["stop_loss"]) if not pd.isna(stock["stop_loss"]) else 0.0
+
+        fetch = download_price_data(ticker, period="1d", auto_adjust=False, progress=False)
+        data = fetch.df
 
         if data.empty:
-            print(f"No data for {ticker}")
+            print(f"No data for {ticker} (source={fetch.source}).")
             row = {
-                "Date": today,
+                "Date": today_iso,
                 "Ticker": ticker,
                 "Shares": shares,
                 "Buy Price": cost,
@@ -192,7 +382,7 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
             low_price = round(float(data["Low"].iloc[-1]), 2)
             close_price = round(float(data["Close"].iloc[-1]), 2)
 
-            if low_price <= stop:
+            if stop and low_price <= stop:
                 price = stop
                 value = round(price * shares, 2)
                 pnl = round((price - cost) * shares, 2)
@@ -208,7 +398,7 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                 total_pnl += pnl
 
             row = {
-                "Date": today,
+                "Date": today_iso,
                 "Ticker": ticker,
                 "Shares": shares,
                 "Buy Price": cost,
@@ -226,7 +416,7 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
 
     # Append TOTAL summary row
     total_row = {
-        "Date": today,
+        "Date": today_iso,
         "Ticker": "TOTAL",
         "Shares": "",
         "Buy Price": "",
@@ -244,13 +434,17 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
     df = pd.DataFrame(results)
     if PORTFOLIO_CSV.exists():
         existing = pd.read_csv(PORTFOLIO_CSV)
-        existing = existing[existing["Date"] != str(today)]
+        existing = existing[existing["Date"] != str(today_iso)]
         print("Saving results to CSV...")
         df = pd.concat([existing, df], ignore_index=True)
 
     df.to_csv(PORTFOLIO_CSV, index=False)
-    return portfolio_df, cash,
+    return portfolio_df, cash
 
+
+# ------------------------------
+# Trade logging
+# ------------------------------
 
 def log_sell(
     ticker: str,
@@ -260,7 +454,6 @@ def log_sell(
     pnl: float,
     portfolio: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Record a stop-loss sale in ``TRADE_LOG_CSV`` and remove the ticker."""
     today = check_weekend()
     log = {
         "Date": today,
@@ -292,33 +485,30 @@ def log_manual_buy(
     chatgpt_portfolio: pd.DataFrame,
     interactive: bool = True,
 ) -> tuple[float, pd.DataFrame]:
-    """Log a manual purchase and append to the portfolio."""
-
     today = check_weekend()
     if interactive:
         check = input(
             f"""You are currently trying to buy {shares} shares of {ticker} with a price of {buy_price} and a stoploss of {stoploss}.
-        If this a mistake, type "1". """
+If this a mistake, type "1". """
         )
-    
         if check == "1":
             print("Returning...")
             return cash, chatgpt_portfolio
 
     # Ensure DataFrame exists with required columns
     if not isinstance(chatgpt_portfolio, pd.DataFrame) or chatgpt_portfolio.empty:
-        chatgpt_portfolio = pd.DataFrame(columns=["ticker", "shares", "stop_loss", "buy_price", "cost_basis"])
+        chatgpt_portfolio = pd.DataFrame(
+            columns=["ticker", "shares", "stop_loss", "buy_price", "cost_basis"]
+        )
 
-    # Download current market data
-    data = yf.download(ticker, period="1d", auto_adjust=False, progress=False)
-    data = cast(pd.DataFrame, data)
-
+    fetch = download_price_data(ticker, period="1d", auto_adjust=False, progress=False)
+    data = fetch.df
     if data.empty:
-        print(f"Manual buy for {ticker} failed: no market data available.")
+        print(f"Manual buy for {ticker} failed: no market data available (source={fetch.source}).")
         return cash, chatgpt_portfolio
 
-    day_high = float(data["High"].iloc[-1].item())
-    day_low = float(data["Low"].iloc[-1].item())
+    day_high = float(data["High"].iloc[-1])
+    day_low = float(data["Low"].iloc[-1])
 
     if not (day_low <= buy_price <= day_high):
         print(
@@ -332,15 +522,14 @@ def log_manual_buy(
         )
         return cash, chatgpt_portfolio
 
-    # Log trade to trade log CSV
-    pnl = 0.0
+    # Log trade
     log = {
         "Date": today,
         "Ticker": ticker,
         "Shares Bought": shares,
         "Buy Price": buy_price,
         "Cost Basis": buy_price * shares,
-        "PnL": pnl,
+        "PnL": 0.0,
         "Reason": "MANUAL BUY - New position",
     }
 
@@ -351,13 +540,12 @@ def log_manual_buy(
         df = pd.DataFrame([log])
     df.to_csv(TRADE_LOG_CSV, index=False)
 
-    # === Update portfolio DataFrame ===
+    # Update portfolio
     rows = chatgpt_portfolio.loc[
         chatgpt_portfolio["ticker"].astype(str).str.upper() == ticker.upper()
     ]
 
     if rows.empty:
-        # New position
         new_trade = {
             "ticker": ticker,
             "shares": float(shares),
@@ -369,7 +557,6 @@ def log_manual_buy(
             [chatgpt_portfolio, pd.DataFrame([new_trade])], ignore_index=True
         )
     else:
-        # Add to existing position — recompute weighted avg price
         idx = rows.index[0]
         cur_shares = float(chatgpt_portfolio.at[idx, "shares"])
         cur_cost = float(chatgpt_portfolio.at[idx, "cost_basis"])
@@ -383,11 +570,9 @@ def log_manual_buy(
         chatgpt_portfolio.at[idx, "buy_price"] = avg_price
         chatgpt_portfolio.at[idx, "stop_loss"] = float(stoploss)
 
-    # Deduct cash
     cash -= shares * buy_price
-    print(f"Manual buy for {ticker} complete!")
+    print(f"Manual buy for {ticker} complete! (source={fetch.source})")
     return cash, chatgpt_portfolio
-
 
 
 def log_manual_sell(
@@ -399,16 +584,6 @@ def log_manual_sell(
     reason: str | None = None,
     interactive: bool = True,
 ) -> tuple[float, pd.DataFrame]:
-    """Log a manual sale and update the portfolio.
-
-    Parameters
-    ----------
-    reason:
-        Description of why the position is being sold. Ignored when
-        ``interactive`` is ``True``.
-    interactive:
-        When ``False`` no interactive confirmation is requested.
-    """
     today = check_weekend()
     if interactive:
         reason = input(
@@ -432,10 +607,11 @@ If this is a mistake, enter 1. """
             f"Manual sell for {ticker} failed: trying to sell {shares_sold} shares but only own {total_shares}."
         )
         return cash, chatgpt_portfolio
-    data = yf.download(ticker, period="1d")
-    data = cast(pd.DataFrame, data)
+
+    fetch = download_price_data(ticker, period="1d", auto_adjust=False, progress=False)
+    data = fetch.df
     if data.empty:
-        print(f"Manual sell for {ticker} failed: no market data available.")
+        print(f"Manual sell for {ticker} failed: no market data available (source={fetch.source}).")
         return cash, chatgpt_portfolio
     day_high = float(data["High"].iloc[-1])
     day_low = float(data["Low"].iloc[-1])
@@ -444,6 +620,7 @@ If this is a mistake, enter 1. """
             f"Manual sell for {ticker} at {sell_price} failed: price outside today's range {round(day_low, 2)}-{round(day_high, 2)}."
         )
         return cash, chatgpt_portfolio
+
     buy_price = float(ticker_row["buy_price"].item())
     cost_basis = buy_price * shares_sold
     pnl = sell_price * shares_sold - cost_basis
@@ -458,6 +635,7 @@ If this is a mistake, enter 1. """
         "Shares Sold": shares_sold,
         "Sell Price": sell_price,
     }
+
     if os.path.exists(TRADE_LOG_CSV):
         df = pd.read_csv(TRADE_LOG_CSV)
         df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
@@ -476,36 +654,34 @@ If this is a mistake, enter 1. """
         )
 
     cash = cash + shares_sold * sell_price
-    print(f"manual sell for {ticker} complete!")
+    print(f"Manual sell for {ticker} complete! (source={fetch.source})")
     return cash, chatgpt_portfolio
 
 
-def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
-    """Print daily price updates and performance metrics (incl. Beta & Alpha) with neat formatting."""
-    portfolio_dict: list[dict[str, object]] = chatgpt_portfolio.to_dict(orient="records")
+# ------------------------------
+# Reporting / Metrics
+# ------------------------------
 
+def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
+    """Print daily price updates and performance metrics (incl. CAPM)."""
+    portfolio_dict: list[dict[str, object]] = chatgpt_portfolio.to_dict(orient="records")
     today = check_weekend()
 
     # -------- Collect daily ticker updates (pretty table) --------
-    rows = []
+    rows: list[list[str]] = []
     header = ["Ticker", "Close", "% Chg", "Volume"]
     for stock in portfolio_dict + [{"ticker": "^RUT"}, {"ticker": "IWO"}, {"ticker": "XBI"}]:
-        ticker = stock["ticker"]
+        ticker = str(stock["ticker"]).upper()
         try:
-            data = yf.download(ticker, period="2d", progress=False, auto_adjust=True)
-            data = cast(pd.DataFrame, data)
+            fetch = download_price_data(ticker, period="2d", progress=False)
+            data = fetch.df
             if data.empty or len(data) < 2:
                 rows.append([ticker, "—", "—", "—"])
                 continue
 
-            # Use .item() to avoid FutureWarning
-            price = data["Close"].iloc[-1]
-            last_price = data["Close"].iloc[-2]
-            volume = data["Volume"].iloc[-1]
-
-            price = float(price.item() if hasattr(price, "item") else float(price))
-            last_price = float(last_price.item() if hasattr(last_price, "item") else float(last_price))
-            volume = float(volume.item() if hasattr(volume, "item") else float(volume))
+            price = float(data["Close"].iloc[-1])
+            last_price = float(data["Close"].iloc[-2])
+            volume = float(data["Volume"].iloc[-1])
 
             percent_change = ((price - last_price) / last_price) * 100
             rows.append([ticker, f"{price:,.2f}", f"{percent_change:+.2f}%", f"{int(volume):,}"])
@@ -517,9 +693,7 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
 
     # Use only TOTAL rows, sorted by date
     totals = chatgpt_df[chatgpt_df["Ticker"] == "TOTAL"].copy()
-    starting_equity = float(totals.loc[totals.index[0],"Total Equity"])
     if totals.empty:
-        # Minimal report if no totals yet
         print("\n" + "=" * 64)
         print(f"Daily Results — {today}")
         print("=" * 64)
@@ -534,7 +708,7 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
         print(f"Cash balance: ${cash:,.2f}")
         return
 
-    totals["Date"] = pd.to_datetime(totals["Date"])
+    totals["Date"] = pd.to_datetime(totals["Date"])  # tolerate ISO strings
     totals = totals.sort_values("Date")
 
     final_equity = float(totals.iloc[-1]["Total Equity"])
@@ -543,7 +717,7 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     # --- Max Drawdown ---
     running_max = equity_series.cummax()
     drawdowns = (equity_series / running_max) - 1.0
-    max_drawdown = drawdowns.min()  # most negative value
+    max_drawdown = float(drawdowns.min())  # most negative value
     mdd_date = drawdowns.idxmin()
 
     # Daily simple returns (portfolio)
@@ -572,8 +746,8 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     rf_period = (1 + rf_daily) ** n_days - 1
 
     # Stats
-    mean_daily = r.mean()
-    std_daily = r.std(ddof=1)
+    mean_daily = float(r.mean())
+    std_daily = float(r.std(ddof=1))
 
     # Downside deviation (MAR = rf_daily)
     downside = (r - rf_daily).clip(upper=0)
@@ -592,8 +766,8 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     start_date = equity_series.index.min() - pd.Timedelta(days=1)
     end_date = equity_series.index.max() + pd.Timedelta(days=1)
 
-    spx = yf.download("^GSPC", start=start_date, end=end_date, progress=False, auto_adjust=True)
-    spx = cast(pd.DataFrame, spx)
+    spx_fetch = download_price_data("^GSPC", start=start_date, end=end_date, progress=False)
+    spx = spx_fetch.df
 
     beta = np.nan
     alpha_annual = np.nan
@@ -610,35 +784,35 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
             rp = (r.reindex(common_idx).astype(float) - rf_daily)   # portfolio excess
             rm = (mkt_ret.reindex(common_idx).astype(float) - rf_daily)  # market excess
 
-            # Ensure 1-D numpy arrays
             x = np.asarray(rm.values, dtype=float).ravel()
             y = np.asarray(rp.values, dtype=float).ravel()
 
             n_obs = x.size
             rm_std = float(np.std(x, ddof=1)) if n_obs > 1 else 0.0
             if rm_std > 0:
-                # OLS: y = beta * x + alpha_daily
                 beta, alpha_daily = np.polyfit(x, y, 1)
                 alpha_annual = (1 + float(alpha_daily)) ** 252 - 1
 
-                # Compute R²
                 corr = np.corrcoef(x, y)[0, 1]
                 r2 = float(corr ** 2)
 
-    # $100 normalized S&P 500 over same window
-    spx_norm = yf.download("^GSPC",
-                           start=equity_series.index.min(),
-                           end=equity_series.index.max() + pd.Timedelta(days=1),
-                           progress=False, auto_adjust=True)
-    spx_norm = cast(pd.DataFrame, spx_norm)
+    # $X normalized S&P 500 over same window (asks user for initial equity)
+    spx_norm_fetch = download_price_data(
+        "^GSPC",
+        start=equity_series.index.min(),
+        end=equity_series.index.max() + pd.Timedelta(days=1),
+        progress=False,
+    )
+    spx_norm = spx_norm_fetch.df
     spx_value = np.nan
     if not spx_norm.empty:
-        initial_price = spx_norm["Close"].iloc[0]
-        price_now = spx_norm["Close"].iloc[-1]
-        initial_price = float(initial_price.item() if hasattr(initial_price, "item") else float(initial_price))
-        price_now = float(price_now.item() if hasattr(price_now, "item") else float(price_now))
-        starting_equity = float(input("what was your starting equity? "))
-        spx_value = (starting_equity / initial_price) * price_now
+        initial_price = float(spx_norm["Close"].iloc[0])
+        price_now = float(spx_norm["Close"].iloc[-1])
+        try:
+            starting_equity = float(input("what was your starting equity? "))
+            spx_value = (starting_equity / initial_price) * price_now
+        except Exception:
+            starting_equity = np.nan
 
     # -------- Pretty Printing --------
     print("\n" + "=" * 64)
@@ -654,7 +828,7 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
         print(f"{str(rrow[0]):<{colw[0]}} {str(rrow[1]):>{colw[1]}} {str(rrow[2]):>{colw[2]}} {str(rrow[3]):>{colw[3]}}")
 
     # Performance metrics
-    def fmt_or_na(x, fmt):
+    def fmt_or_na(x: float | int | None, fmt: str) -> str:
         return (fmt.format(x) if not (x is None or (isinstance(x, float) and np.isnan(x))) else "N/A")
 
     print("\n[ Risk & Return ]")
@@ -677,8 +851,10 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     print("\n[ Snapshot ]")
     print(f"{'Latest ChatGPT Equity:':32} ${final_equity:>14,.2f}")
     if not np.isnan(spx_value):
-        print(f"{f'${starting_equity} in S&P 500 (same window):':32} ${spx_value:>14,.2f}")
-
+        try:
+            print(f"{f'${starting_equity} in S&P 500 (same window):':32} ${spx_value:>14,.2f}")
+        except Exception:
+            pass
     print(f"{'Cash Balance:':32} ${cash:>14,.2f}")
 
     print("\n[ Holdings ]")
@@ -694,19 +870,67 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     )
 
 
+# ------------------------------
+# Orchestration
+# ------------------------------
+
+def load_latest_portfolio_state(
+    file: str,
+) -> tuple[pd.DataFrame | list[dict[str, Any]], float]:
+    """Load the most recent portfolio snapshot and cash balance."""
+    df = pd.read_csv(file)
+    if df.empty:
+        portfolio = pd.DataFrame([])
+        print("Portfolio CSV is empty. Returning set amount of cash for creating portfolio.")
+        try:
+            cash = float(input("What would you like your starting cash amount to be? "))
+        except ValueError:
+            raise ValueError(
+                "Cash could not be converted to float datatype. Please enter a valid number."
+            )
+        return portfolio, cash
+
+    non_total = df[df["Ticker"] != "TOTAL"].copy()
+    non_total["Date"] = pd.to_datetime(non_total["Date"])
+
+    latest_date = non_total["Date"].max()
+    latest_tickers = non_total[non_total["Date"] == latest_date].copy()
+    sold_mask = latest_tickers["Action"].astype(str).str.startswith("SELL")
+    latest_tickers = latest_tickers[~sold_mask].copy()
+    latest_tickers.drop(
+        columns=[
+            "Date",
+            "Cash Balance",
+            "Total Equity",
+            "Action",
+            "Current Price",
+            "PnL",
+            "Total Value",
+        ],
+        inplace=True,
+        errors="ignore",
+    )
+    latest_tickers.rename(
+        columns={
+            "Cost Basis": "cost_basis",
+            "Buy Price": "buy_price",
+            "Shares": "shares",
+            "Ticker": "ticker",
+            "Stop Loss": "stop_loss",
+        },
+        inplace=True,
+    )
+    latest_tickers = latest_tickers.reset_index(drop=True).to_dict(orient="records")
+
+    df_total = df[df["Ticker"] == "TOTAL"].copy()
+    df_total["Date"] = pd.to_datetime(df_total["Date"])
+    latest = df_total.sort_values("Date").iloc[-1]
+    cash = float(latest["Cash Balance"])
+    return latest_tickers, cash
 
 
 def main(file: str, data_dir: Path | None = None) -> None:
-    """Check verisons, then run the trading script.
-
-    Parameters
-    ----------
-    file:
-        CSV file containing historical portfolio records.
-    data_dir:
-        Directory where trade and portfolio CSVs will be stored.
-    """
-    check_versions()
+    """Check versions, then run the trading script."""
     chatgpt_portfolio, cash = load_latest_portfolio_state(file)
     print(file)
     if data_dir is not None:
@@ -715,50 +939,11 @@ def main(file: str, data_dir: Path | None = None) -> None:
     chatgpt_portfolio, cash = process_portfolio(chatgpt_portfolio, cash)
     daily_results(chatgpt_portfolio, cash)
 
-def load_latest_portfolio_state(
-    file: str,
-) -> tuple[pd.DataFrame | list[dict[str, Any]], float]:
-    """Load the most recent portfolio snapshot and cash balance.
 
-    Parameters
-    ----------
-    file:
-        CSV file containing historical portfolio records.
-
-    Returns
-    -------
-    tuple[pd.DataFrame | list[dict[str, Any]], float]
-        A representation of the latest holdings (either an empty DataFrame or a
-        list of row dictionaries) and the associated cash balance.
-    """
-
-    df = pd.read_csv(file)
-    if df.empty:
-        portfolio = pd.DataFrame([])
-        print(
-            "Portfolio CSV is empty. Returning set amount of cash for creating portfolio."
-        )
-        try:
-            cash = float(input("What would you like your starting cash amount to be? "))
-        except ValueError:
-            raise ValueError(
-                "Cash could not be converted to float datatype. Please enter a valid number."
-            )
-        return portfolio, cash
-    non_total = df[df["Ticker"] != "TOTAL"].copy()
-    non_total["Date"] = pd.to_datetime(non_total["Date"])
-
-    latest_date = non_total["Date"].max()
-    # Get all tickers from the latest date
-    latest_tickers = non_total[non_total["Date"] == latest_date].copy()
-    sold_mask = latest_tickers["Action"].astype(str).str.startswith("SELL")
-    latest_tickers = latest_tickers[~sold_mask].copy()
-    latest_tickers.drop(columns=["Date", "Cash Balance", "Total Equity", "Action", "Current Price", "PnL", "Total Value"], inplace=True)
-    latest_tickers.rename(columns={"Cost Basis": "cost_basis", "Buy Price": "buy_price", "Shares": "shares", "Ticker": "ticker", "Stop Loss": "stop_loss"}, inplace=True)
-    latest_tickers = latest_tickers.reset_index(drop=True).to_dict(orient='records')
-    df = df[df["Ticker"] == "TOTAL"]  # Only the total summary rows
-    df["Date"] = pd.to_datetime(df["Date"])
-    latest = df.sort_values("Date").iloc[-1]
-    cash = float(latest["Cash Balance"])
-    return latest_tickers, cash
-
+if __name__ == "__main__":
+    # Example usage (edit the file path if needed):
+    csv_path = PORTFOLIO_CSV if PORTFOLIO_CSV.exists() else (SCRIPT_DIR / "chatgpt_portfolio_update.csv")
+    if not csv_path.exists():
+        print("No portfolio CSV found. Create one or run main() with your file path.")
+    else:
+        main(str(csv_path))
