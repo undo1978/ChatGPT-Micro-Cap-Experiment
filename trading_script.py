@@ -27,6 +27,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+
+warnings.simplefilter("ignore", category=FutureWarning)
 try:
     import pandas_datareader.data as pdr
     _HAS_PDR = True
@@ -304,7 +306,14 @@ def process_portfolio(
     cash: float,
     interactive: bool = True,
 ) -> tuple[pd.DataFrame, float]:
-    """Update daily price information, log stop-loss sells, and prompt for trades."""
+    """
+    Update daily price information, execute stop-loss sells, and (optionally) prompt for trades.
+
+    Additions:
+      - BUY (MOO): market-on-open buy that executes at today's Open (falls back to Close if Open missing).
+      - BUY (LIMIT): unchanged (delegates to log_manual_buy).
+      - SELL (LIMIT): unchanged (delegates to log_manual_sell).
+    """
     today_iso = last_trading_date().date().isoformat()
     portfolio_df = _ensure_df(portfolio)
 
@@ -312,7 +321,7 @@ def process_portfolio(
     total_value = 0.0
     total_pnl = 0.0
 
-    # (Optional) Interactive trade logging
+    # ------- Interactive trade entry (now supports MOO) -------
     if interactive:
         while True:
             print(portfolio_df)
@@ -320,38 +329,127 @@ def process_portfolio(
                 f""" You have {cash} in cash.
 Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press Enter to continue: """
             ).strip().lower()
+
             if action == "b":
+                ticker = input("Enter ticker symbol: ").strip().upper()
+                order_type = input("Order type? 'm' = market-on-open, 'l' = limit: ").strip().lower()
+
                 try:
-                    ticker = input("Enter ticker symbol: ").strip().upper()
                     shares = float(input("Enter number of shares: "))
-                    buy_price = float(input("Enter buy price: "))
-                    stop_loss = float(input("Enter stop loss: "))
-                    if shares <= 0 or buy_price <= 0 or stop_loss <= 0:
+                    if shares <= 0:
                         raise ValueError
                 except ValueError:
-                    print("Invalid input. Manual buy cancelled.")
-                else:
+                    print("Invalid share amount. Buy cancelled.")
+                    continue
+
+                # ---- MOO buy (executes at Open) ----
+                if order_type == "m":
+                    try:
+                        stop_loss = float(input("Enter stop loss (or 0 to skip): "))
+                        if stop_loss < 0:
+                            raise ValueError
+                    except ValueError:
+                        print("Invalid stop loss. Buy cancelled.")
+                        continue
+
+                    # Fetch today's bar and fill at Open
+                    fetch = download_price_data(ticker, period="1d", auto_adjust=False, progress=False)
+                    data = fetch.df
+                    if data.empty:
+                        print(f"MOO buy for {ticker} failed: no market data available (source={fetch.source}).")
+                        continue
+
+                    o = float(data["Open"].iloc[-1]) if "Open" in data else float(data["Close"].iloc[-1])
+                    exec_price = round(o, 2)
+                    notional = exec_price * shares
+                    if notional > cash:
+                        print(f"MOO buy for {ticker} failed: cost {notional:.2f} exceeds cash {cash:.2f}.")
+                        continue
+
+                    # ---- Log trade to trade log CSV ----
+                    log = {
+                        "Date": today_iso,
+                        "Ticker": ticker,
+                        "Shares Bought": shares,
+                        "Buy Price": exec_price,
+                        "Cost Basis": notional,
+                        "PnL": 0.0,
+                        "Reason": "MANUAL BUY MOO - Filled",
+                    }
+                    if os.path.exists(TRADE_LOG_CSV):
+                        df_log = pd.read_csv(TRADE_LOG_CSV)
+                        df_log = pd.concat([df_log, pd.DataFrame([log])], ignore_index=True)
+                    else:
+                        df_log = pd.DataFrame([log])
+                    df_log.to_csv(TRADE_LOG_CSV, index=False)
+
+                    # ---- Update portfolio (weighted avg if adding) ----
+                    rows = portfolio_df.loc[portfolio_df["ticker"].astype(str).str.upper() == ticker.upper()]
+                    if rows.empty:
+                        new_trade = {
+                            "ticker": ticker,
+                            "shares": float(shares),
+                            "stop_loss": float(stop_loss),
+                            "buy_price": float(exec_price),
+                            "cost_basis": float(notional),
+                        }
+                        portfolio_df = pd.concat([portfolio_df, pd.DataFrame([new_trade])], ignore_index=True)
+                    else:
+                        idx = rows.index[0]
+                        cur_shares = float(portfolio_df.at[idx, "shares"])
+                        cur_cost = float(portfolio_df.at[idx, "cost_basis"])
+                        new_shares = cur_shares + float(shares)
+                        new_cost = cur_cost + float(notional)
+                        avg_price = new_cost / new_shares if new_shares else 0.0
+                        portfolio_df.at[idx, "shares"] = new_shares
+                        portfolio_df.at[idx, "cost_basis"] = new_cost
+                        portfolio_df.at[idx, "buy_price"] = avg_price
+                        portfolio_df.at[idx, "stop_loss"] = float(stop_loss)
+
+                    cash -= notional
+                    print(f"Manual BUY MOO for {ticker} filled at ${exec_price:.2f} ({fetch.source}).")
+                    continue
+
+                # ---- LIMIT buy (existing behavior) ----
+                elif order_type == "l":
+                    try:
+                        buy_price = float(input("Enter buy LIMIT price: "))
+                        stop_loss = float(input("Enter stop loss (or 0 to skip): "))
+                        if buy_price <= 0 or stop_loss < 0:
+                            raise ValueError
+                    except ValueError:
+                        print("Invalid input. Limit buy cancelled.")
+                        continue
+
                     cash, portfolio_df = log_manual_buy(
                         buy_price, shares, ticker, stop_loss, cash, portfolio_df
                     )
-                continue
+                    continue
+
+                else:
+                    print("Unknown order type. Use 'm' or 'l'.")
+                    continue
+
             if action == "s":
                 try:
                     ticker = input("Enter ticker symbol: ").strip().upper()
-                    shares = float(input("Enter number of shares to sell: "))
-                    sell_price = float(input("Enter sell price: "))
+                    shares = float(input("Enter number of shares to sell (LIMIT): "))
+                    sell_price = float(input("Enter sell LIMIT price: "))
                     if shares <= 0 or sell_price <= 0:
                         raise ValueError
                 except ValueError:
                     print("Invalid input. Manual sell cancelled.")
-                else:
-                    cash, portfolio_df = log_manual_sell(
-                        sell_price, shares, ticker, cash, portfolio_df
-                    )
+                    continue
+
+                cash, portfolio_df = log_manual_sell(
+                    sell_price, shares, ticker, cash, portfolio_df
+                )
                 continue
+
+            # empty => proceed to pricing loop
             break
 
-    # Price update + stop loss handling
+    # ------- Daily pricing + stop-loss execution -------
     for _, stock in portfolio_df.iterrows():
         ticker = str(stock["ticker"]).upper()
         shares = int(stock["shares"]) if not pd.isna(stock["shares"]) else 0
@@ -365,81 +463,72 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
         if data.empty:
             print(f"No data for {ticker} (source={fetch.source}).")
             row = {
-                "Date": today_iso,
-                "Ticker": ticker,
-                "Shares": shares,
-                "Buy Price": cost,
-                "Cost Basis": cost_basis,
-                "Stop Loss": stop,
-                "Current Price": "",
-                "Total Value": "",
-                "PnL": "",
-                "Action": "NO DATA",
-                "Cash Balance": "",
-                "Total Equity": "",
+                "Date": today_iso, "Ticker": ticker, "Shares": shares,
+                "Buy Price": cost, "Cost Basis": cost_basis, "Stop Loss": stop,
+                "Current Price": "", "Total Value": "", "PnL": "",
+                "Action": "NO DATA", "Cash Balance": "", "Total Equity": "",
+            }
+            results.append(row)
+            continue
+
+        # Extract OHLC defensively
+        o = float(data["Open"].iloc[-1]) if "Open" in data else np.nan
+        h = float(data["High"].iloc[-1])
+        l = float(data["Low"].iloc[-1])
+        c = float(data["Close"].iloc[-1])
+        if np.isnan(o):
+            o = c
+
+        # --- Stop-loss (market) with gap handling ---
+        if stop and l <= stop:
+            exec_price = round(o if o <= stop else stop, 2)
+            value = round(exec_price * shares, 2)
+            pnl = round((exec_price - cost) * shares, 2)
+            action = "SELL - Stop Loss Triggered"
+            cash += value
+            portfolio_df = log_sell(ticker, shares, exec_price, cost, pnl, portfolio_df)
+            row = {
+                "Date": today_iso, "Ticker": ticker, "Shares": shares,
+                "Buy Price": cost, "Cost Basis": cost_basis, "Stop Loss": stop,
+                "Current Price": exec_price, "Total Value": value, "PnL": pnl,
+                "Action": action, "Cash Balance": "", "Total Equity": "",
             }
         else:
-            low_price = round(float(data["Low"].iloc[-1]), 2)
-            close_price = round(float(data["Close"].iloc[-1]), 2)
-
-            if stop and low_price <= stop:
-                price = stop
-                value = round(price * shares, 2)
-                pnl = round((price - cost) * shares, 2)
-                action = "SELL - Stop Loss Triggered"
-                cash += value
-                portfolio_df = log_sell(ticker, shares, price, cost, pnl, portfolio_df)
-            else:
-                price = close_price
-                value = round(price * shares, 2)
-                pnl = round((price - cost) * shares, 2)
-                action = "HOLD"
-                total_value += value
-                total_pnl += pnl
-
+            price = round(c, 2)
+            value = round(price * shares, 2)
+            pnl = round((price - cost) * shares, 2)
+            action = "HOLD"
+            total_value += value
+            total_pnl += pnl
             row = {
-                "Date": today_iso,
-                "Ticker": ticker,
-                "Shares": shares,
-                "Buy Price": cost,
-                "Cost Basis": cost_basis,
-                "Stop Loss": stop,
-                "Current Price": price,
-                "Total Value": value,
-                "PnL": pnl,
-                "Action": action,
-                "Cash Balance": "",
-                "Total Equity": "",
+                "Date": today_iso, "Ticker": ticker, "Shares": shares,
+                "Buy Price": cost, "Cost Basis": cost_basis, "Stop Loss": stop,
+                "Current Price": price, "Total Value": value, "PnL": pnl,
+                "Action": action, "Cash Balance": "", "Total Equity": "",
             }
 
         results.append(row)
 
-    # Append TOTAL summary row
+    # ------- Append TOTAL row & persist -------
     total_row = {
-        "Date": today_iso,
-        "Ticker": "TOTAL",
-        "Shares": "",
-        "Buy Price": "",
-        "Cost Basis": "",
-        "Stop Loss": "",
-        "Current Price": "",
-        "Total Value": round(total_value, 2),
-        "PnL": round(total_pnl, 2),
-        "Action": "",
-        "Cash Balance": round(cash, 2),
+        "Date": today_iso, "Ticker": "TOTAL", "Shares": "", "Buy Price": "",
+        "Cost Basis": "", "Stop Loss": "", "Current Price": "",
+        "Total Value": round(total_value, 2), "PnL": round(total_pnl, 2),
+        "Action": "", "Cash Balance": round(cash, 2),
         "Total Equity": round(total_value + cash, 2),
     }
     results.append(total_row)
 
-    df = pd.DataFrame(results)
+    df_out = pd.DataFrame(results)
     if PORTFOLIO_CSV.exists():
         existing = pd.read_csv(PORTFOLIO_CSV)
         existing = existing[existing["Date"] != str(today_iso)]
         print("Saving results to CSV...")
-        df = pd.concat([existing, df], ignore_index=True)
+        df_out = pd.concat([existing, df_out], ignore_index=True)
+    df_out.to_csv(PORTFOLIO_CSV, index=False)
 
-    df.to_csv(PORTFOLIO_CSV, index=False)
     return portfolio_df, cash
+
 
 
 # ------------------------------
@@ -477,7 +566,7 @@ def log_sell(
 
 
 def log_manual_buy(
-    buy_price: float,
+    buy_price: float,   # interpreted as LIMIT price
     shares: float,
     ticker: str,
     stoploss: float,
@@ -485,41 +574,55 @@ def log_manual_buy(
     chatgpt_portfolio: pd.DataFrame,
     interactive: bool = True,
 ) -> tuple[float, pd.DataFrame]:
+    """IOC buy-limit:
+    Fill at Open if Open <= limit,
+    else at limit if Low <= limit,
+    else no fill.
+    """
+
     today = check_weekend()
+
+    # Confirm trade if interactive
     if interactive:
         check = input(
-            f"""You are currently trying to buy {shares} shares of {ticker} with a price of {buy_price} and a stoploss of {stoploss}.
-If this a mistake, type "1". """
+            f"You are placing a BUY LIMIT for {shares} {ticker} at ${buy_price:.2f}.\n"
+            f"If this is a mistake, type '1': "
         )
         if check == "1":
             print("Returning...")
             return cash, chatgpt_portfolio
 
-    # Ensure DataFrame exists with required columns
+    # Ensure portfolio has required structure
     if not isinstance(chatgpt_portfolio, pd.DataFrame) or chatgpt_portfolio.empty:
         chatgpt_portfolio = pd.DataFrame(
             columns=["ticker", "shares", "stop_loss", "buy_price", "cost_basis"]
         )
 
+    # Get today’s price data
     fetch = download_price_data(ticker, period="1d", auto_adjust=False, progress=False)
     data = fetch.df
     if data.empty:
         print(f"Manual buy for {ticker} failed: no market data available (source={fetch.source}).")
         return cash, chatgpt_portfolio
 
-    day_high = float(data["High"].iloc[-1])
-    day_low = float(data["Low"].iloc[-1])
+    o = float(data.get("Open", [np.nan])[-1])
+    h = float(data["High"].iloc[-1])
+    l = float(data["Low"].iloc[-1])
+    if np.isnan(o):
+        o = float(data["Close"].iloc[-1])  # fallback
 
-    if not (day_low <= buy_price <= day_high):
-        print(
-            f"Manual buy for {ticker} at {buy_price} failed: price outside today's range {round(day_low, 2)}-{round(day_high, 2)}."
-        )
+    # --- IOC buy-limit fill logic ---
+    if o <= buy_price:
+        exec_price = o  # better fill at open
+    elif l <= buy_price:
+        exec_price = buy_price  # touched intraday
+    else:
+        print(f"Buy limit ${buy_price:.2f} for {ticker} not reached today (range {l:.2f}-{h:.2f}). Order not filled.")
         return cash, chatgpt_portfolio
 
-    if buy_price * shares > cash:
-        print(
-            f"Manual buy for {ticker} failed: cost {buy_price * shares} exceeds cash balance {cash}."
-        )
+    cost_amt = exec_price * shares
+    if cost_amt > cash:
+        print(f"Manual buy for {ticker} failed: cost {cost_amt:.2f} exceeds cash balance {cash:.2f}.")
         return cash, chatgpt_portfolio
 
     # Log trade
@@ -527,12 +630,11 @@ If this a mistake, type "1". """
         "Date": today,
         "Ticker": ticker,
         "Shares Bought": shares,
-        "Buy Price": buy_price,
-        "Cost Basis": buy_price * shares,
+        "Buy Price": exec_price,
+        "Cost Basis": cost_amt,
         "PnL": 0.0,
-        "Reason": "MANUAL BUY - New position",
+        "Reason": "MANUAL BUY LIMIT - Filled",
     }
-
     if os.path.exists(TRADE_LOG_CSV):
         df = pd.read_csv(TRADE_LOG_CSV)
         df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
@@ -541,42 +643,38 @@ If this a mistake, type "1". """
     df.to_csv(TRADE_LOG_CSV, index=False)
 
     # Update portfolio
-    rows = chatgpt_portfolio.loc[
-        chatgpt_portfolio["ticker"].astype(str).str.upper() == ticker.upper()
-    ]
-
+    rows = chatgpt_portfolio.loc[chatgpt_portfolio["ticker"].str.upper() == ticker.upper()]
     if rows.empty:
-        new_trade = {
-            "ticker": ticker,
-            "shares": float(shares),
-            "stop_loss": float(stoploss),
-            "buy_price": float(buy_price),
-            "cost_basis": float(buy_price * shares),
-        }
         chatgpt_portfolio = pd.concat(
-            [chatgpt_portfolio, pd.DataFrame([new_trade])], ignore_index=True
+            [chatgpt_portfolio, pd.DataFrame([{
+                "ticker": ticker,
+                "shares": float(shares),
+                "stop_loss": float(stoploss),
+                "buy_price": float(exec_price),
+                "cost_basis": float(cost_amt),
+            }])],
+            ignore_index=True
         )
     else:
         idx = rows.index[0]
         cur_shares = float(chatgpt_portfolio.at[idx, "shares"])
         cur_cost = float(chatgpt_portfolio.at[idx, "cost_basis"])
-
         new_shares = cur_shares + float(shares)
-        new_cost = cur_cost + float(buy_price * shares)
-        avg_price = new_cost / new_shares if new_shares else 0.0
-
+        new_cost = cur_cost + float(cost_amt)
         chatgpt_portfolio.at[idx, "shares"] = new_shares
         chatgpt_portfolio.at[idx, "cost_basis"] = new_cost
-        chatgpt_portfolio.at[idx, "buy_price"] = avg_price
+        chatgpt_portfolio.at[idx, "buy_price"] = new_cost / new_shares if new_shares else 0.0
         chatgpt_portfolio.at[idx, "stop_loss"] = float(stoploss)
 
-    cash -= shares * buy_price
-    print(f"Manual buy for {ticker} complete! (source={fetch.source})")
+    cash -= cost_amt
+    print(f"Manual BUY LIMIT for {ticker} filled at ${exec_price:.2f} ({fetch.source}).")
     return cash, chatgpt_portfolio
 
 
+
+
 def log_manual_sell(
-    sell_price: float,
+    sell_price: float,  # interpreted as LIMIT price
     shares_sold: float,
     ticker: str,
     cash: float,
@@ -584,28 +682,27 @@ def log_manual_sell(
     reason: str | None = None,
     interactive: bool = True,
 ) -> tuple[float, pd.DataFrame]:
+    """IOC sell-limit: fill at Open if Open>=limit, else at limit if High>=limit, else no fill."""
     today = check_weekend()
     if interactive:
         reason = input(
-            f"""You are currently trying to sell {shares_sold} shares of {ticker} at a price of {sell_price}.
+            f"""You are placing a SELL LIMIT for {shares_sold} {ticker} at ${sell_price:.2f}.
 If this is a mistake, enter 1. """
         )
-
     if reason == "1":
         print("Returning...")
         return cash, chatgpt_portfolio
     elif reason is None:
         reason = ""
+
     if ticker not in chatgpt_portfolio["ticker"].values:
         print(f"Manual sell for {ticker} failed: ticker not in portfolio.")
         return cash, chatgpt_portfolio
-    ticker_row = chatgpt_portfolio[chatgpt_portfolio["ticker"] == ticker]
 
+    ticker_row = chatgpt_portfolio[chatgpt_portfolio["ticker"] == ticker]
     total_shares = int(ticker_row["shares"].item())
     if shares_sold > total_shares:
-        print(
-            f"Manual sell for {ticker} failed: trying to sell {shares_sold} shares but only own {total_shares}."
-        )
+        print(f"Manual sell for {ticker} failed: trying to sell {shares_sold} shares but only own {total_shares}.")
         return cash, chatgpt_portfolio
 
     fetch = download_price_data(ticker, period="1d", auto_adjust=False, progress=False)
@@ -613,29 +710,35 @@ If this is a mistake, enter 1. """
     if data.empty:
         print(f"Manual sell for {ticker} failed: no market data available (source={fetch.source}).")
         return cash, chatgpt_portfolio
-    day_high = float(data["High"].iloc[-1])
-    day_low = float(data["Low"].iloc[-1])
-    if not (day_low <= sell_price <= day_high):
-        print(
-            f"Manual sell for {ticker} at {sell_price} failed: price outside today's range {round(day_low, 2)}-{round(day_high, 2)}."
-        )
+
+    o = float(data["Open"].iloc[-1]) if "Open" in data else np.nan
+    h = float(data["High"].iloc[-1])
+    l = float(data["Low"].iloc[-1])
+    if np.isnan(o):
+        o = float(data["Close"].iloc[-1])
+
+    # --- IOC sell-limit fill logic ---
+    exec_price: float | None = None
+    if o >= sell_price:
+        exec_price = o  # you sell at the (better) open
+    elif h >= sell_price:
+        exec_price = sell_price  # touched limit intraday
+    else:
+        print(f"Sell limit ${sell_price:.2f} for {ticker} not reached today (range {l:.2f}-{h:.2f}). Order not filled.")
         return cash, chatgpt_portfolio
 
     buy_price = float(ticker_row["buy_price"].item())
     cost_basis = buy_price * shares_sold
-    pnl = sell_price * shares_sold - cost_basis
-    log = {
-        "Date": today,
-        "Ticker": ticker,
-        "Shares Bought": "",
-        "Buy Price": "",
-        "Cost Basis": cost_basis,
-        "PnL": pnl,
-        "Reason": f"MANUAL SELL - {reason}",
-        "Shares Sold": shares_sold,
-        "Sell Price": sell_price,
-    }
+    pnl = exec_price * shares_sold - cost_basis
 
+    # Log trade
+    log = {
+        "Date": today, "Ticker": ticker,
+        "Shares Bought": "", "Buy Price": "",
+        "Cost Basis": cost_basis, "PnL": pnl,
+        "Reason": f"MANUAL SELL LIMIT - {reason}", "Shares Sold": shares_sold,
+        "Sell Price": exec_price,
+    }
     if os.path.exists(TRADE_LOG_CSV):
         df = pd.read_csv(TRADE_LOG_CSV)
         df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
@@ -643,19 +746,20 @@ If this is a mistake, enter 1. """
         df = pd.DataFrame([log])
     df.to_csv(TRADE_LOG_CSV, index=False)
 
+    # Update holdings
     if total_shares == shares_sold:
         chatgpt_portfolio = chatgpt_portfolio[chatgpt_portfolio["ticker"] != ticker]
     else:
         row_index = ticker_row.index[0]
         chatgpt_portfolio.at[row_index, "shares"] = total_shares - shares_sold
         chatgpt_portfolio.at[row_index, "cost_basis"] = (
-            chatgpt_portfolio.at[row_index, "shares"]
-            * chatgpt_portfolio.at[row_index, "buy_price"]
+            chatgpt_portfolio.at[row_index, "shares"] * chatgpt_portfolio.at[row_index, "buy_price"]
         )
 
-    cash = cash + shares_sold * sell_price
-    print(f"Manual sell for {ticker} complete! (source={fetch.source})")
+    cash += shares_sold * exec_price
+    print(f"Manual SELL LIMIT for {ticker} filled at ${exec_price:.2f} ({fetch.source}).")
     return cash, chatgpt_portfolio
+
 
 
 # ------------------------------
