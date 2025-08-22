@@ -964,12 +964,13 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     print("\n[ Holdings ]")
     print(chatgpt_portfolio)
 
-    print("\n[ Operator Note ]")
+    print("\n[ Your Instructions ]")
     print(
-        "You have complete control over every decision. Make any changes you believe are beneficial—no approval required.\n"
+        "Use this info to make decisions regarding your portfolio. You have complete control over every decision. Make any changes you believe are beneficial—no approval required.\n"
         "Deep research is not permitted. Act at your discretion to achieve the best outcome.\n"
-        "If you do not make a clear indication to change positions immediately after this message, the portfolio remains unchanged for tomorrow.\n"
+        "If you do not make a clear indication to change positions IMMEDIATELY after this message, the portfolio remains unchanged for tomorrow.\n"
         "You are encouraged to use the internet to check current prices (and related up-to-date info) for potential buys.\n"
+        "\n"
         "*Paste everything above into ChatGPT*"
     )
 
