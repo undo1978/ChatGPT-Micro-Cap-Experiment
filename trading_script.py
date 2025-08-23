@@ -774,7 +774,7 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     # -------- Collect daily ticker updates (pretty table) --------
     rows: list[list[str]] = []
     header = ["Ticker", "Close", "% Chg", "Volume"]
-    for stock in portfolio_dict + [{"ticker": "^RUT"}, {"ticker": "IWO"}, {"ticker": "XBI"}]:
+    for stock in portfolio_dict + [{"ticker": "IWO"}, {"ticker": "XBI"}, {"ticker": "SPY"}, {"ticker": "IWM"}]:
         ticker = str(stock["ticker"]).upper()
         try:
             fetch = download_price_data(ticker, period="2d", progress=False)
