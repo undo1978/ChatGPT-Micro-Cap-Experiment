@@ -139,38 +139,41 @@ def _yahoo_download(ticker: str, **kwargs: Any) -> pd.DataFrame:
     return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
 def _stooq_csv_download(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    """Fetch OHLCV from Stooq CSV endpoint (daily)."""
+    """Fetch OHLCV from Stooq CSV endpoint (daily). Good for US tickers and many ETFs."""
     import requests
+    # Map ^GSPC -> ^SPX (Stooq naming), block ^RUT
     if ticker in STOOQ_BLOCKLIST:
         return pd.DataFrame()
-
     t = STOOQ_MAP.get(ticker, ticker)
 
+    # Stooq daily CSV wants lowercase symbols; US equities/ETFs use .us suffix.
     if not t.startswith("^"):
         sym = t.lower()
         if not sym.endswith(".us"):
             sym = f"{sym}.us"
     else:
+        # Indices keep caret, in lowercase (e.g., ^spx)
         sym = t.lower()
 
+    # Stooq uses inclusive start and exclusive end – we’ll filter after download
     url = f"https://stooq.com/q/d/l/?s={sym}&i=d"
     try:
         r = requests.get(url, timeout=10)
         if r.status_code != 200 or not r.text.strip():
             return pd.DataFrame()
-        df = pd.read_csv(io.StringIO(r.text))
+        df = pd.read_csv(pd.compat.StringIO(r.text))
         if df.empty:
             return pd.DataFrame()
-
+        # Normalize columns + index
         df["Date"] = pd.to_datetime(df["Date"])
         df.set_index("Date", inplace=True)
         df.sort_index(inplace=True)
-
-        # Normalize to Yahoo-like
+        # Rename to Yahoo-like
+        df.rename(columns={"Open":"Open","High":"High","Low":"Low","Close":"Close","Volume":"Volume"}, inplace=True)
+        # Keep within [start, end)
+        df = df.loc[(df.index >= start.normalize()) & (df.index < end.normalize())]
         if "Adj Close" not in df.columns:
             df["Adj Close"] = df["Close"]
-
-        df = df.loc[(df.index >= start.normalize()) & (df.index < end.normalize())]
         return df[["Open","High","Low","Close","Adj Close","Volume"]]
     except Exception:
         return pd.DataFrame()
