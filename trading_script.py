@@ -49,22 +49,24 @@ TRADE_LOG_CSV = DATA_DIR / "chatgpt_trade_log.csv"
 # ------------------------------
 
 def last_trading_date(today: datetime | None = None) -> pd.Timestamp:
-    """Return last trading date (M-F), mapping Sat->Fri and Sun->Fri.
-
-    This function does *not* know market holidays; it specifically handles weekends.
-    """
+    """Return last trading date (Mon-Fri), mapping Sat->Fri and Sun->Fri.
+    (Does not know holidays.)"""
     dt = pd.Timestamp(today or datetime.now())
     # 0=Mon ... 4=Fri, 5=Sat, 6=Sun
-    if dt.weekday() == 5:
+    if dt.weekday() == 5:  # Saturday
         return (dt - pd.Timedelta(days=1)).normalize()
-    if dt.weekday() == 6:
+    if dt.weekday() == 6:  # Sunday
         return (dt - pd.Timedelta(days=2)).normalize()
     return dt.normalize()
-
 
 def check_weekend() -> str:
     """Backwards-compatible wrapper returning ISO date string for last trading day."""
     return last_trading_date().date().isoformat()
+
+def trading_day_window(target: datetime | None = None) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """[start, end) window for the last trading day (Fri on weekends)."""
+    d = last_trading_date(target)
+    return d, (d + pd.Timedelta(days=1))
 
 
 # ------------------------------
@@ -83,50 +85,44 @@ STOOQ_MAP = {
 STOOQ_BLOCKLIST = {"^RUT"}
 
 
+# ------------------------------
+# Data access layer (UPDATED)
+# ------------------------------
+
 @dataclass
 class FetchResult:
     df: pd.DataFrame
-    source: str  # "yahoo" or "stooq" or "empty"
-
+    source: str  # "yahoo" | "stooq-pdr" | "stooq-csv" | "yahoo:<proxy>-proxy" | "empty"
 
 def _to_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df.index, pd.DatetimeIndex):
-        # yfinance returns DatetimeIndex; pdr.stooq returns DatetimeIndex too
-        # but be defensive
         try:
             df.index = pd.to_datetime(df.index)
         except Exception:
             pass
     return df
 
-
 def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
-    cols = [c for c in ["Open", "High", "Low", "Close", "Adj Close", "Volume"] if c in df.columns]
     # Ensure all expected columns exist
     for c in ["Open", "High", "Low", "Close", "Volume"]:
         if c not in df.columns:
             df[c] = np.nan
     if "Adj Close" not in df.columns:
-        # For Stooq we set Adj Close = Close (no adjustments)
         df["Adj Close"] = df["Close"]
-    return df[["Open", "High", "Low", "Close", "Adj Close", "Volume"]]
-
+    cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+    return df[cols]
 
 def _yahoo_download(ticker: str, **kwargs: Any) -> pd.DataFrame:
     """Call yfinance.download with a real UA and silence all chatter."""
     import io, logging, requests
     from contextlib import redirect_stderr, redirect_stdout
 
-    # Robust session with UA to avoid 403/999
     sess = requests.Session()
-    sess.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    })
+    sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
     kwargs.setdefault("progress", False)
     kwargs.setdefault("threads", False)
     kwargs.setdefault("session", sess)
 
-    # Silence yfinance logger + stdout/stderr
     logging.getLogger("yfinance").setLevel(logging.CRITICAL)
     buf = io.StringIO()
     with warnings.catch_warnings():
@@ -140,45 +136,41 @@ def _yahoo_download(ticker: str, **kwargs: Any) -> pd.DataFrame:
 
 def _stooq_csv_download(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
     """Fetch OHLCV from Stooq CSV endpoint (daily). Good for US tickers and many ETFs."""
-    import requests
-    # Map ^GSPC -> ^SPX (Stooq naming), block ^RUT
+    import requests, io
     if ticker in STOOQ_BLOCKLIST:
         return pd.DataFrame()
     t = STOOQ_MAP.get(ticker, ticker)
 
-    # Stooq daily CSV wants lowercase symbols; US equities/ETFs use .us suffix.
+    # Stooq daily CSV: lowercase; equities/ETFs use .us, indices keep ^ prefix
     if not t.startswith("^"):
         sym = t.lower()
         if not sym.endswith(".us"):
             sym = f"{sym}.us"
     else:
-        # Indices keep caret, in lowercase (e.g., ^spx)
         sym = t.lower()
 
-    # Stooq uses inclusive start and exclusive end – we’ll filter after download
     url = f"https://stooq.com/q/d/l/?s={sym}&i=d"
     try:
         r = requests.get(url, timeout=10)
         if r.status_code != 200 or not r.text.strip():
             return pd.DataFrame()
-        df = pd.read_csv(pd.compat.StringIO(r.text))
+        df = pd.read_csv(io.StringIO(r.text))
         if df.empty:
             return pd.DataFrame()
-        # Normalize columns + index
+
         df["Date"] = pd.to_datetime(df["Date"])
         df.set_index("Date", inplace=True)
         df.sort_index(inplace=True)
-        # Rename to Yahoo-like
-        df.rename(columns={"Open":"Open","High":"High","Low":"Low","Close":"Close","Volume":"Volume"}, inplace=True)
-        # Keep within [start, end)
+
+        # Filter to [start, end) (Stooq end is exclusive)
         df = df.loc[(df.index >= start.normalize()) & (df.index < end.normalize())]
+
+        # Normalize to Yahoo-like schema
         if "Adj Close" not in df.columns:
             df["Adj Close"] = df["Close"]
-        return df[["Open","High","Low","Close","Adj Close","Volume"]]
+        return df[["Open", "High", "Low", "Close", "Adj Close", "Volume"]]
     except Exception:
         return pd.DataFrame()
-
-
 
 def _stooq_download(
     ticker: str,
@@ -186,12 +178,9 @@ def _stooq_download(
     end: datetime | pd.Timestamp,
 ) -> pd.DataFrame:
     """Fetch OHLCV from Stooq via pandas-datareader; returns empty DF on failure."""
-    if not _HAS_PDR:
-        return pd.DataFrame()
-    if ticker in STOOQ_BLOCKLIST:
+    if not _HAS_PDR or ticker in STOOQ_BLOCKLIST:
         return pd.DataFrame()
 
-    # Map common indices and lowercase regular tickers for Stooq
     t = STOOQ_MAP.get(ticker, ticker)
     if not t.startswith("^"):
         t = t.lower()
@@ -203,52 +192,54 @@ def _stooq_download(
     except Exception:
         return pd.DataFrame()
 
-
-
-def _period_to_range(period: str | None, start: Any, end: Any) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """Translate a Yahoo-style period (e.g., '2d') or explicit start/end to a date range.
-
-    Stooq uses inclusive start and exclusive end; we add +1 day to end to cover the last bar.
+def _weekend_safe_range(period: str | None, start: Any, end: Any) -> tuple[pd.Timestamp, pd.Timestamp]:
     """
-    if period and not start and not end and isinstance(period, str) and period.endswith("d"):
-        days = int(period[:-1])
-        end_ts = pd.Timestamp(datetime.now())
-        start_ts = end_ts - pd.Timedelta(days=days)
-    else:
-        end_ts = pd.Timestamp(end) if end else pd.Timestamp(datetime.now())
+    Compute a concrete [start, end) window.
+    - If explicit start/end provided: use them (add +1 day to end to make it exclusive).
+    - If period is '1d': use the last trading day's [Fri, Sat) window on weekends.
+    - If period like '2d'/'5d': build a window ending at the last trading day.
+    """
+    if start or end:
+        end_ts = pd.Timestamp(end) if end else last_trading_date() + pd.Timedelta(days=1)
         start_ts = pd.Timestamp(start) if start else (end_ts - pd.Timedelta(days=5))
-    # Make Stooq end exclusive by adding one day
-    return start_ts.normalize(), (end_ts + pd.Timedelta(days=1)).normalize()
+        return start_ts.normalize(), pd.Timestamp(end_ts).normalize()
 
+    # No explicit dates; derive from period
+    if isinstance(period, str) and period.endswith("d"):
+        days = int(period[:-1])
+    else:
+        days = 1
+
+    # Anchor to last trading day (Fri on Sun/Sat)
+    end_trading = last_trading_date()
+    start_ts = (end_trading - pd.Timedelta(days=days)).normalize()
+    end_ts = (end_trading + pd.Timedelta(days=1)).normalize()
+    return start_ts, end_ts
 
 def download_price_data(ticker: str, **kwargs: Any) -> FetchResult:
     """
     Robust OHLCV fetch with multi-stage fallbacks:
 
     Order:
-      1) Yahoo Finance via yfinance (with UA & silenced; see _yahoo_download)
-      2) Stooq via pandas-datareader (see _stooq_download)
-      3) Stooq direct CSV (see _stooq_csv_download)
+      1) Yahoo Finance via yfinance
+      2) Stooq via pandas-datareader
+      3) Stooq direct CSV
       4) Index proxies (e.g., ^GSPC->SPY, ^RUT->IWM) via Yahoo
-
-    Accepts Yahoo-like kwargs (period/start/end/auto_adjust/progress/etc).
-    Returns: FetchResult(df, source) where df has columns:
-      [Open, High, Low, Close, Adj Close, Volume]
+    Returns a DataFrame with columns [Open, High, Low, Close, Adj Close, Volume].
     """
-    # Normalize kwargs for yfinance
+    # Pull out range args, compute a weekend-safe window
     period = kwargs.pop("period", None)
-    start = kwargs.get("start")
-    end = kwargs.get("end")
+    start = kwargs.pop("start", None)
+    end = kwargs.pop("end", None)
     kwargs.setdefault("progress", False)
     kwargs.setdefault("threads", False)
 
-    # ---------- 1) Yahoo ----------
-    df_y = _yahoo_download(ticker, period=period, **kwargs)
+    s, e = _weekend_safe_range(period, start, end)
+
+    # ---------- 1) Yahoo (date-bounded) ----------
+    df_y = _yahoo_download(ticker, start=s, end=e, **kwargs)
     if isinstance(df_y, pd.DataFrame) and not df_y.empty:
         return FetchResult(_normalize_ohlcv(_to_datetime_index(df_y)), "yahoo")
-
-    # Build a concrete [start, end) window for Stooq fallbacks
-    s, e = _period_to_range(period, start, end)
 
     # ---------- 2) Stooq via pandas-datareader ----------
     df_s = _stooq_download(ticker, start=s, end=e)
@@ -260,14 +251,11 @@ def download_price_data(ticker: str, **kwargs: Any) -> FetchResult:
     if isinstance(df_csv, pd.DataFrame) and not df_csv.empty:
         return FetchResult(_normalize_ohlcv(_to_datetime_index(df_csv)), "stooq-csv")
 
-    # ---------- 4) Proxies for common indices when all else fails ----------
-    proxy_map = {
-        "^GSPC": "SPY",
-        "^RUT":  "IWM",
-    }
+    # ---------- 4) Proxy indices if applicable ----------
+    proxy_map = {"^GSPC": "SPY", "^RUT": "IWM"}
     proxy = proxy_map.get(ticker)
     if proxy:
-        df_proxy = _yahoo_download(proxy, period=period, **kwargs)
+        df_proxy = _yahoo_download(proxy, start=s, end=e, **kwargs)
         if isinstance(df_proxy, pd.DataFrame) and not df_proxy.empty:
             return FetchResult(_normalize_ohlcv(_to_datetime_index(df_proxy)), f"yahoo:{proxy}-proxy")
 
@@ -300,20 +288,11 @@ def _ensure_df(portfolio: pd.DataFrame | dict[str, list[object]] | list[dict[str
         return pd.DataFrame(portfolio)
     raise TypeError("portfolio must be a DataFrame, dict, or list[dict]")
 
-
 def process_portfolio(
     portfolio: pd.DataFrame | dict[str, list[object]] | list[dict[str, object]],
     cash: float,
     interactive: bool = True,
 ) -> tuple[pd.DataFrame, float]:
-    """
-    Update daily price information, execute stop-loss sells, and (optionally) prompt for trades.
-
-    Additions:
-      - BUY (MOO): market-on-open buy that executes at today's Open (falls back to Close if Open missing).
-      - BUY (LIMIT): unchanged (delegates to log_manual_buy).
-      - SELL (LIMIT): unchanged (delegates to log_manual_sell).
-    """
     today_iso = last_trading_date().date().isoformat()
     portfolio_df = _ensure_df(portfolio)
 
@@ -321,7 +300,7 @@ def process_portfolio(
     total_value = 0.0
     total_pnl = 0.0
 
-    # ------- Interactive trade entry (now supports MOO) -------
+    # ------- Interactive trade entry (supports MOO) -------
     if interactive:
         while True:
             print(portfolio_df)
@@ -342,7 +321,6 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                     print("Invalid share amount. Buy cancelled.")
                     continue
 
-                # ---- MOO buy (executes at Open) ----
                 if order_type == "m":
                     try:
                         stop_loss = float(input("Enter stop loss (or 0 to skip): "))
@@ -352,8 +330,8 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                         print("Invalid stop loss. Buy cancelled.")
                         continue
 
-                    # Fetch today's bar and fill at Open
-                    fetch = download_price_data(ticker, period="1d", auto_adjust=False, progress=False)
+                    s, e = trading_day_window()
+                    fetch = download_price_data(ticker, start=s, end=e, auto_adjust=False, progress=False)
                     data = fetch.df
                     if data.empty:
                         print(f"MOO buy for {ticker} failed: no market data available (source={fetch.source}).")
@@ -366,7 +344,6 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                         print(f"MOO buy for {ticker} failed: cost {notional:.2f} exceeds cash {cash:.2f}.")
                         continue
 
-                    # ---- Log trade to trade log CSV ----
                     log = {
                         "Date": today_iso,
                         "Ticker": ticker,
@@ -383,7 +360,6 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                         df_log = pd.DataFrame([log])
                     df_log.to_csv(TRADE_LOG_CSV, index=False)
 
-                    # ---- Update portfolio (weighted avg if adding) ----
                     rows = portfolio_df.loc[portfolio_df["ticker"].astype(str).str.upper() == ticker.upper()]
                     if rows.empty:
                         new_trade = {
@@ -410,7 +386,6 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                     print(f"Manual BUY MOO for {ticker} filled at ${exec_price:.2f} ({fetch.source}).")
                     continue
 
-                # ---- LIMIT buy (existing behavior) ----
                 elif order_type == "l":
                     try:
                         buy_price = float(input("Enter buy LIMIT price: "))
@@ -425,7 +400,6 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                         buy_price, shares, ticker, stop_loss, cash, portfolio_df
                     )
                     continue
-
                 else:
                     print("Unknown order type. Use 'm' or 'l'.")
                     continue
@@ -446,10 +420,10 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                 )
                 continue
 
-            # empty => proceed to pricing loop
-            break
+            break  # proceed to pricing
 
     # ------- Daily pricing + stop-loss execution -------
+    s, e = trading_day_window()
     for _, stock in portfolio_df.iterrows():
         ticker = str(stock["ticker"]).upper()
         shares = int(stock["shares"]) if not pd.isna(stock["shares"]) else 0
@@ -457,7 +431,7 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
         cost_basis = float(stock["cost_basis"]) if not pd.isna(stock["cost_basis"]) else cost * shares
         stop = float(stock["stop_loss"]) if not pd.isna(stock["stop_loss"]) else 0.0
 
-        fetch = download_price_data(ticker, period="1d", auto_adjust=False, progress=False)
+        fetch = download_price_data(ticker, start=s, end=e, auto_adjust=False, progress=False)
         data = fetch.df
 
         if data.empty:
@@ -471,7 +445,6 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
             results.append(row)
             continue
 
-        # Extract OHLC defensively
         o = float(data["Open"].iloc[-1]) if "Open" in data else np.nan
         h = float(data["High"].iloc[-1])
         l = float(data["Low"].iloc[-1])
@@ -479,7 +452,6 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
         if np.isnan(o):
             o = c
 
-        # --- Stop-loss (market) with gap handling ---
         if stop and l <= stop:
             exec_price = round(o if o <= stop else stop, 2)
             value = round(exec_price * shares, 2)
@@ -509,7 +481,6 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
 
         results.append(row)
 
-    # ------- Append TOTAL row & persist -------
     total_row = {
         "Date": today_iso, "Ticker": "TOTAL", "Shares": "", "Buy Price": "",
         "Cost Basis": "", "Stop Loss": "", "Current Price": "",
@@ -564,9 +535,8 @@ def log_sell(
     df.to_csv(TRADE_LOG_CSV, index=False)
     return portfolio
 
-
 def log_manual_buy(
-    buy_price: float,   # interpreted as LIMIT price
+    buy_price: float,
     shares: float,
     ticker: str,
     stoploss: float,
@@ -574,15 +544,8 @@ def log_manual_buy(
     chatgpt_portfolio: pd.DataFrame,
     interactive: bool = True,
 ) -> tuple[float, pd.DataFrame]:
-    """IOC buy-limit:
-    Fill at Open if Open <= limit,
-    else at limit if Low <= limit,
-    else no fill.
-    """
-
     today = check_weekend()
 
-    # Confirm trade if interactive
     if interactive:
         check = input(
             f"You are placing a BUY LIMIT for {shares} {ticker} at ${buy_price:.2f}.\n"
@@ -592,14 +555,13 @@ def log_manual_buy(
             print("Returning...")
             return cash, chatgpt_portfolio
 
-    # Ensure portfolio has required structure
     if not isinstance(chatgpt_portfolio, pd.DataFrame) or chatgpt_portfolio.empty:
         chatgpt_portfolio = pd.DataFrame(
             columns=["ticker", "shares", "stop_loss", "buy_price", "cost_basis"]
         )
 
-    # Get today’s price data
-    fetch = download_price_data(ticker, period="1d", auto_adjust=False, progress=False)
+    s, e = trading_day_window()
+    fetch = download_price_data(ticker, start=s, end=e, auto_adjust=False, progress=False)
     data = fetch.df
     if data.empty:
         print(f"Manual buy for {ticker} failed: no market data available (source={fetch.source}).")
@@ -609,13 +571,12 @@ def log_manual_buy(
     h = float(data["High"].iloc[-1])
     l = float(data["Low"].iloc[-1])
     if np.isnan(o):
-        o = float(data["Close"].iloc[-1])  # fallback
+        o = float(data["Close"].iloc[-1])
 
-    # --- IOC buy-limit fill logic ---
     if o <= buy_price:
-        exec_price = o  # better fill at open
+        exec_price = o
     elif l <= buy_price:
-        exec_price = buy_price  # touched intraday
+        exec_price = buy_price
     else:
         print(f"Buy limit ${buy_price:.2f} for {ticker} not reached today (range {l:.2f}-{h:.2f}). Order not filled.")
         return cash, chatgpt_portfolio
@@ -625,7 +586,6 @@ def log_manual_buy(
         print(f"Manual buy for {ticker} failed: cost {cost_amt:.2f} exceeds cash balance {cash:.2f}.")
         return cash, chatgpt_portfolio
 
-    # Log trade
     log = {
         "Date": today,
         "Ticker": ticker,
@@ -642,7 +602,6 @@ def log_manual_buy(
         df = pd.DataFrame([log])
     df.to_csv(TRADE_LOG_CSV, index=False)
 
-    # Update portfolio
     rows = chatgpt_portfolio.loc[chatgpt_portfolio["ticker"].str.upper() == ticker.upper()]
     if rows.empty:
         chatgpt_portfolio = pd.concat(
@@ -670,11 +629,8 @@ def log_manual_buy(
     print(f"Manual BUY LIMIT for {ticker} filled at ${exec_price:.2f} ({fetch.source}).")
     return cash, chatgpt_portfolio
 
-
-
-
 def log_manual_sell(
-    sell_price: float,  # interpreted as LIMIT price
+    sell_price: float,
     shares_sold: float,
     ticker: str,
     cash: float,
@@ -682,7 +638,6 @@ def log_manual_sell(
     reason: str | None = None,
     interactive: bool = True,
 ) -> tuple[float, pd.DataFrame]:
-    """IOC sell-limit: fill at Open if Open>=limit, else at limit if High>=limit, else no fill."""
     today = check_weekend()
     if interactive:
         reason = input(
@@ -705,7 +660,8 @@ If this is a mistake, enter 1. """
         print(f"Manual sell for {ticker} failed: trying to sell {shares_sold} shares but only own {total_shares}.")
         return cash, chatgpt_portfolio
 
-    fetch = download_price_data(ticker, period="1d", auto_adjust=False, progress=False)
+    s, e = trading_day_window()
+    fetch = download_price_data(ticker, start=s, end=e, auto_adjust=False, progress=False)
     data = fetch.df
     if data.empty:
         print(f"Manual sell for {ticker} failed: no market data available (source={fetch.source}).")
@@ -717,12 +673,10 @@ If this is a mistake, enter 1. """
     if np.isnan(o):
         o = float(data["Close"].iloc[-1])
 
-    # --- IOC sell-limit fill logic ---
-    exec_price: float | None = None
     if o >= sell_price:
-        exec_price = o  # you sell at the (better) open
+        exec_price = o
     elif h >= sell_price:
-        exec_price = sell_price  # touched limit intraday
+        exec_price = sell_price
     else:
         print(f"Sell limit ${sell_price:.2f} for {ticker} not reached today (range {l:.2f}-{h:.2f}). Order not filled.")
         return cash, chatgpt_portfolio
@@ -731,7 +685,6 @@ If this is a mistake, enter 1. """
     cost_basis = buy_price * shares_sold
     pnl = exec_price * shares_sold - cost_basis
 
-    # Log trade
     log = {
         "Date": today, "Ticker": ticker,
         "Shares Bought": "", "Buy Price": "",
@@ -746,7 +699,6 @@ If this is a mistake, enter 1. """
         df = pd.DataFrame([log])
     df.to_csv(TRADE_LOG_CSV, index=False)
 
-    # Update holdings
     if total_shares == shares_sold:
         chatgpt_portfolio = chatgpt_portfolio[chatgpt_portfolio["ticker"] != ticker]
     else:
@@ -771,13 +723,15 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     portfolio_dict: list[dict[str, object]] = chatgpt_portfolio.to_dict(orient="records")
     today = check_weekend()
 
-    # -------- Collect daily ticker updates (pretty table) --------
     rows: list[list[str]] = []
     header = ["Ticker", "Close", "% Chg", "Volume"]
+
+    end_d = last_trading_date()                           # Fri on weekends
+    start_d = (end_d - pd.Timedelta(days=4)).normalize()  # go back enough to capture 2 sessions even around holidays
     for stock in portfolio_dict + [{"ticker": "IWO"}, {"ticker": "XBI"}, {"ticker": "SPY"}, {"ticker": "IWM"}]:
         ticker = str(stock["ticker"]).upper()
         try:
-            fetch = download_price_data(ticker, period="2d", progress=False)
+            fetch = download_price_data(ticker, start=start_d, end=(end_d + pd.Timedelta(days=1)), progress=False)
             data = fetch.df
             if data.empty or len(data) < 2:
                 rows.append([ticker, "—", "—", "—"])
