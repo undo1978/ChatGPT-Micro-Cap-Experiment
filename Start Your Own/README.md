@@ -11,18 +11,20 @@ This script updates your portfolio and logs trades.
 
 1. **Install Python packages**
    ```bash
-   pip install pandas yfinance numpy matplotlib
+   pip install -r requirements.txt
    ```
 2. **Run the script**
    ```bash
    python "Start Your Own/Trading_Script.py"
    ```
+
+**NOTE: ALWAYS RUN PROGRAM AFTER TRADING DAYS, OR YESTERDAY'S DATA WILL BE USED.**
+
 3. **Follow the prompts**
    - The program uses past data from 'chatgpt_portfolio_update.csv' to automatically grab today's portfolio.
-   - If it is a weekend, the script will inform you that date will be inaccurate. However, this is easily fixable by editing CSV files manually and saving.
    - If 'chatgpt_portfolio_update.csv' is empty (meaning no past trading days logged), you will required to enter your starting cash.
    - From here, you can set up your portfolio or make any changes.
-   - The script asks if you want to record manual buys or sells. **IT WILL ASSUME TRADES HAPPEN, SO CHECK ACCURACY.**
+   - The script asks if you want to record manual buys or sells.
    - After you hit 'Enter' all calculations for the day are made.
    - Results are saved to `chatgpt_portfolio_update.csv` and any trades are added to `chatgpt_trade_log.csv`.
    - In the terminal, daily results are printed. Copy and paste results into the LLM. **ALL PROMPTING IS MANUAL AT THE MOMENT.**
