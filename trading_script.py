@@ -185,9 +185,11 @@ def _stooq_download(
         t = t.lower()
 
     try:
+        # Ensure pdr is imported locally if not available globally
         if not _HAS_PDR:
             return pd.DataFrame()
-        df = cast(pd.DataFrame, pdr.DataReader(t, "stooq", start=start, end=end))
+        import pandas_datareader.data as pdr_local
+        df = cast(pd.DataFrame, pdr_local.DataReader(t, "stooq", start=start, end=end))
         df.sort_index(inplace=True)
         return df
     except Exception:
@@ -747,7 +749,7 @@ If this is a mistake, enter 1. """
 
 def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     """Print daily price updates and performance metrics (incl. CAPM)."""
-    portfolio_dict: list[dict[str, object]] = chatgpt_portfolio.to_dict(orient="records")
+    portfolio_dict: list[dict[Any, Any]] = chatgpt_portfolio.to_dict(orient="records")
     today = check_weekend()
 
     rows: list[list[str]] = []
@@ -822,7 +824,13 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
         print(chatgpt_portfolio)
         print(f"Cash balance: ${cash:,.2f}")
         print(f"Latest ChatGPT Equity: ${final_equity:,.2f}")
-        print(f"Maximum Drawdown: {max_drawdown:.2%} (on {mdd_date.date()})")
+        if hasattr(mdd_date, "date") and not isinstance(mdd_date, (str, int)):
+            mdd_date_str = mdd_date.date()
+        elif hasattr(mdd_date, "strftime") and not isinstance(mdd_date, (str, int)):
+            mdd_date_str = mdd_date.strftime("%Y-%m-%d")
+        else:
+            mdd_date_str = str(mdd_date)
+        print(f"Maximum Drawdown: {max_drawdown:.2%} (on {mdd_date_str})")
         return
 
     # Risk-free config
@@ -839,7 +847,16 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     downside_std = float((downside.pow(2).mean()) ** 0.5) if not downside.empty else np.nan
 
     # Total return over the window
-    period_return = float((1 + r).prod() - 1)
+    r_numeric = pd.to_numeric(r, errors="coerce")
+    r_numeric = r_numeric[~r_numeric.isna()].astype(float)
+    # Filter out any non-finite values to ensure only valid floats are used
+    r_numeric = r_numeric[np.isfinite(r_numeric)]
+    # Only use numeric values for the calculation
+    if len(r_numeric) > 0:
+        arr = np.asarray(r_numeric.values, dtype=float)
+        period_return = float(np.prod(1 + arr) - 1) if arr.size > 0 else float('nan')
+    else:
+        period_return = float('nan')
 
     # Sharpe / Sortino
     sharpe_period = (period_return - rf_period) / (std_daily * np.sqrt(n_days)) if std_daily > 0 else np.nan
@@ -864,7 +881,7 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
         mkt_ret = spx["Close"].astype(float).pct_change().dropna()
 
         # Align portfolio & market returns
-        common_idx = r.index.intersection(mkt_ret.index)
+        common_idx = r.index.intersection(list(mkt_ret.index))
         if len(common_idx) >= 2:
             rp = (r.reindex(common_idx).astype(float) - rf_daily)   # portfolio excess
             rm = (mkt_ret.reindex(common_idx).astype(float) - rf_daily)  # market excess
@@ -890,14 +907,15 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     )
     spx_norm = spx_norm_fetch.df
     spx_value = np.nan
+    starting_equity = np.nan  # Ensure starting_equity is always defined
     if not spx_norm.empty:
         initial_price = float(spx_norm["Close"].iloc[0])
         price_now = float(spx_norm["Close"].iloc[-1])
         try:
             starting_equity = float(input("what was your starting equity? "))
-            spx_value = (starting_equity / initial_price) * price_now
         except Exception:
-            starting_equity = np.nan
+            print("Invalid input for starting equity. Defaulting to NaN.")
+        spx_value = (starting_equity / initial_price) * price_now if not np.isnan(starting_equity) else np.nan
 
     # -------- Pretty Printing --------
     print("\n" + "=" * 64)
@@ -917,7 +935,13 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
         return (fmt.format(x) if not (x is None or (isinstance(x, float) and np.isnan(x))) else "N/A")
 
     print("\n[ Risk & Return ]")
-    print(f"{'Max Drawdown:':32} {fmt_or_na(max_drawdown, '{:.2%}'):>15}   on {mdd_date.date()}")
+    if hasattr(mdd_date, "date") and not isinstance(mdd_date, (str, int)):
+        mdd_date_str = mdd_date.date()
+    elif hasattr(mdd_date, "strftime") and not isinstance(mdd_date, (str, int)):
+        mdd_date_str = mdd_date.strftime("%Y-%m-%d")
+    else:
+        mdd_date_str = str(mdd_date)
+    print(f"{'Max Drawdown:':32} {fmt_or_na(max_drawdown, '{:.2%}'):>15}   on {mdd_date_str}")
     print(f"{'Sharpe Ratio (period):':32} {fmt_or_na(sharpe_period, '{:.4f}'):>15}")
     print(f"{'Sharpe Ratio (annualized):':32} {fmt_or_na(sharpe_annual, '{:.4f}'):>15}")
     print(f"{'Sortino Ratio (period):':32} {fmt_or_na(sortino_period, '{:.4f}'):>15}")
