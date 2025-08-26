@@ -27,8 +27,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-
-warnings.simplefilter("ignore", category=FutureWarning)
+# Optional pandas-datareader import for Stooq access
 try:
     import pandas_datareader.data as pdr
     _HAS_PDR = True
@@ -186,6 +185,8 @@ def _stooq_download(
         t = t.lower()
 
     try:
+        if not _HAS_PDR:
+            return pd.DataFrame()
         df = cast(pd.DataFrame, pdr.DataReader(t, "stooq", start=start, end=end))
         df.sort_index(inplace=True)
         return df
@@ -353,9 +354,13 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                         "PnL": 0.0,
                         "Reason": "MANUAL BUY MOO - Filled",
                     }
+                    # --- Manual BUY MOO logging ---
                     if os.path.exists(TRADE_LOG_CSV):
                         df_log = pd.read_csv(TRADE_LOG_CSV)
-                        df_log = pd.concat([df_log, pd.DataFrame([log])], ignore_index=True)
+                        if df_log.empty:
+                            df_log = pd.DataFrame([log])
+                        else:
+                            df_log = pd.concat([df_log, pd.DataFrame([log])], ignore_index=True)
                     else:
                         df_log = pd.DataFrame([log])
                     df_log.to_csv(TRADE_LOG_CSV, index=False)
@@ -369,7 +374,10 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
                             "buy_price": float(exec_price),
                             "cost_basis": float(notional),
                         }
-                        portfolio_df = pd.concat([portfolio_df, pd.DataFrame([new_trade])], ignore_index=True)
+                        if portfolio_df.empty:
+                            portfolio_df = pd.DataFrame([new_trade])
+                        else:
+                            portfolio_df = pd.concat([portfolio_df, pd.DataFrame([new_trade])], ignore_index=True)
                     else:
                         idx = rows.index[0]
                         cur_shares = float(portfolio_df.at[idx, "shares"])
@@ -529,7 +537,10 @@ def log_sell(
 
     if TRADE_LOG_CSV.exists():
         df = pd.read_csv(TRADE_LOG_CSV)
-        df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
+        if df.empty:
+            df = pd.DataFrame([log])
+        else:
+            df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
     else:
         df = pd.DataFrame([log])
     df.to_csv(TRADE_LOG_CSV, index=False)
@@ -597,23 +608,35 @@ def log_manual_buy(
     }
     if os.path.exists(TRADE_LOG_CSV):
         df = pd.read_csv(TRADE_LOG_CSV)
-        df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
+        if df.empty:
+            df = pd.DataFrame([log])
+        else:
+            df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
     else:
         df = pd.DataFrame([log])
     df.to_csv(TRADE_LOG_CSV, index=False)
 
     rows = chatgpt_portfolio.loc[chatgpt_portfolio["ticker"].str.upper() == ticker.upper()]
     if rows.empty:
-        chatgpt_portfolio = pd.concat(
-            [chatgpt_portfolio, pd.DataFrame([{
+        if chatgpt_portfolio.empty:
+            chatgpt_portfolio = pd.DataFrame([{
                 "ticker": ticker,
                 "shares": float(shares),
                 "stop_loss": float(stoploss),
                 "buy_price": float(exec_price),
                 "cost_basis": float(cost_amt),
-            }])],
-            ignore_index=True
-        )
+            }])
+        else:
+            chatgpt_portfolio = pd.concat(
+                [chatgpt_portfolio, pd.DataFrame([{
+                    "ticker": ticker,
+                    "shares": float(shares),
+                    "stop_loss": float(stoploss),
+                    "buy_price": float(exec_price),
+                    "cost_basis": float(cost_amt),
+                }])],
+                ignore_index=True
+            )
     else:
         idx = rows.index[0]
         cur_shares = float(chatgpt_portfolio.at[idx, "shares"])
@@ -694,10 +717,14 @@ If this is a mistake, enter 1. """
     }
     if os.path.exists(TRADE_LOG_CSV):
         df = pd.read_csv(TRADE_LOG_CSV)
-        df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
+        if df.empty:
+            df = pd.DataFrame([log])
+        else:
+            df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
     else:
         df = pd.DataFrame([log])
     df.to_csv(TRADE_LOG_CSV, index=False)
+
 
     if total_shares == shares_sold:
         chatgpt_portfolio = chatgpt_portfolio[chatgpt_portfolio["ticker"] != ticker]
