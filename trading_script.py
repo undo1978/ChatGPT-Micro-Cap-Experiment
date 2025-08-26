@@ -990,7 +990,7 @@ def load_latest_portfolio_state(
     """Load the most recent portfolio snapshot and cash balance."""
     df = pd.read_csv(file)
     if df.empty:
-        portfolio = pd.DataFrame([])
+        portfolio = pd.DataFrame(columns=["ticker", "shares", "stop_loss", "buy_price", "cost_basis"])
         print("Portfolio CSV is empty. Returning set amount of cash for creating portfolio.")
         try:
             cash = float(input("What would you like your starting cash amount to be? "))

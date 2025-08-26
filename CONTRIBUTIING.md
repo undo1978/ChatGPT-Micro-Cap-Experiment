@@ -12,10 +12,6 @@ If you encounter a problem or have an idea for improvement, please open an issue
 ## How You Can Help
 We welcome all kinds of contributions!
 
-Help is really needed on the frontend overhaul; the repo link is [Here](https://github.com/LuckyOne7777/ChatGPT-Portfolio-Overhaul/blob/main/README.md).
-
-However, feel free to open/work on issues on this repo!
-
 - **Report bugs** – Let us know about any unexpected behavior.
 - **Submit pull requests** – Fork the repo, create a branch, make your changes, and open a PR. Please include a description of your changes and test results.
 
