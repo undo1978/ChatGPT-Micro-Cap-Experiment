@@ -35,6 +35,25 @@ try:
 except Exception:
     _HAS_PDR = False
 
+# -------- AS-OF override --------
+ASOF_DATE: pd.Timestamp | None = None
+
+def set_asof(date: str | datetime | pd.Timestamp | None) -> None:
+    """Set a global 'as of' date so the script treats that day as 'today'."""
+    global ASOF_DATE
+    if date is None:
+        ASOF_DATE = None
+        return
+    ASOF_DATE = pd.Timestamp(date).normalize()
+
+# Allow env var override:  ASOF_DATE=YYYY-MM-DD python trading_script.py
+_env_asof = os.environ.get("ASOF_DATE")
+if _env_asof:
+    set_asof(_env_asof)
+
+def _effective_now() -> datetime:
+    return (ASOF_DATE.to_pydatetime() if ASOF_DATE is not None else datetime.now())
+
 # ------------------------------
 # Globals / file locations
 # ------------------------------
@@ -49,13 +68,11 @@ TRADE_LOG_CSV = DATA_DIR / "chatgpt_trade_log.csv"
 # ------------------------------
 
 def last_trading_date(today: datetime | None = None) -> pd.Timestamp:
-    """Return last trading date (Mon-Fri), mapping Sat->Fri and Sun->Fri.
-    (Does not know holidays.)"""
-    dt = pd.Timestamp(today or datetime.now())
-    # 0=Mon ... 4=Fri, 5=Sat, 6=Sun
-    if dt.weekday() == 5:  # Saturday
+    """Return last trading date (Mon–Fri), mapping Sat/Sun -> Fri."""
+    dt = pd.Timestamp(today or _effective_now())
+    if dt.weekday() == 5:  # Sat -> Fri
         return (dt - pd.Timedelta(days=1)).normalize()
-    if dt.weekday() == 6:  # Sunday
+    if dt.weekday() == 6:  # Sun -> Fri
         return (dt - pd.Timedelta(days=2)).normalize()
     return dt.normalize()
 
@@ -1000,9 +1017,21 @@ def main(file: str, data_dir: Path | None = None) -> None:
 
 
 if __name__ == "__main__":
-    # Example usage (edit the file path if needed):
+    import argparse
+
+    # Default CSV path resolution (keep your existing logic)
     csv_path = PORTFOLIO_CSV if PORTFOLIO_CSV.exists() else (SCRIPT_DIR / "chatgpt_portfolio_update.csv")
-    if not csv_path.exists():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--file", default=str(csv_path), help="Path to chatgpt_portfolio_update.csv")
+    parser.add_argument("--data-dir", default=None, help="Optional data directory")
+    parser.add_argument("--asof", default=None, help="Treat this YYYY-MM-DD as 'today' (e.g., 2025-08-27)")
+    args = parser.parse_args()
+
+    if args.asof:
+        set_asof(args.asof)
+
+    if not Path(args.file).exists():
         print("No portfolio CSV found. Create one or run main() with your file path.")
     else:
-        main(str(csv_path))
+        main(args.file, Path(args.data_dir) if args.data_dir else None)
