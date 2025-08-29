@@ -1,16 +1,43 @@
 # ChatGPT Micro-Cap Experiment
 Welcome to the repo behind my 6-month live trading experiment where ChatGPT manages a real-money micro-cap portfolio.
 
-### Frontend Help Wanted!!!
+## Quick Start
 
-I’m currently looking for **frontend contributors** to help improve the project’s UI.  
+1. **Install dependencies:**
+   ```bash
+   # Recommended: Use a virtual environment
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   
+   pip install -r requirements.txt
+   ```
 
-Areas where help is needed:  
-- Graph rendering (fixing data points not loading properly)  
-- Email login page (debugging and styling issues)  
-- General UI/UX improvements  
+2. **Run the trading script:**
+   ```bash
+   python trading_script.py
+   ```
 
-Check out the [Contributing Guide](https://github.com/LuckyOne7777/ChatGPT-Portfolio-Overhaul/blob/main/CONTRIBUTING.md) to learn how to get involved.
+3. **Generate performance graphs:**
+   ```bash
+   python "Scripts and CSV Files/Generate_Graph.py"
+   ```
+
+4. **Run with specific options:**
+   ```bash
+   # Use specific portfolio file
+   python trading_script.py --file "Scripts and CSV Files/chatgpt_portfolio_update.csv"
+   
+   # Backtest with specific date
+   python trading_script.py --asof 2025-08-27
+   ```
+
+## Repository Structure
+
+- **`trading_script.py`** - Main trading engine with portfolio management and stop-loss automation
+- **`Scripts and CSV Files/`** - Active trading data, CSV files, and wrapper scripts
+- **`Start Your Own/`** - Template files and guide for starting your own experiment  
+- **`Weekly Deep Research (MD|PDF)/`** - Research summaries and performance reports
+- **`Experiment Details/`** - Documentation, methodology, prompts, and Q&A
 
 
 # The Concept
@@ -38,14 +65,20 @@ So, starting with just $100, I wanted to answer a simple but powerful question:
 - [Research Summaries (MD)](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/tree/main/Weekly%20Deep%20Research%20(MD))  
 - [Full Deep Research Reports (PDF)](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/tree/main/Weekly%20Deep%20Research%20(PDF))  
 
-# Performance Example (6/30 – 7/25)
+# Current Performance
 
----
-<!-- To update dates (%286-30%20-%208-15%29%20Results), change the "8-15" in the middle. -->
-![Week 7 Performance](%286-30%20-%208-15%29%20Results.png)
+<!-- To update performance chart: 
+     1. Replace the image file with updated results
+     2. Update the dates and description below
+     3. Update the "Last Updated" date -->
 
----
-- Currently outperforming the S&P 500.
+**Last Updated:** August 2025
+
+![Latest Performance Results](%286-30%20-%208-15%29%20Results.png)
+
+**Current Status:** Portfolio is outperforming the S&P 500 benchmark
+
+*Performance data is updated after each trading day. See the CSV files in `Scripts and CSV Files/` for detailed daily tracking.*
 
 # Features of This Repo
 - Live trading scripts — used to evaluate prices and update holdings daily  
@@ -59,18 +92,26 @@ AI is being hyped across every industry, but can it really manage money without 
 
 This project is an attempt to find out — with transparency, data, and a real budget.
 
-# Tech Stack
-- Basic Python  
-- Pandas + yFinance for data & logic  
-- Matplotlib for visualizations  
-- ChatGPT-5 for decision-making  
+# Tech Stack & Features
 
-# Installation
-To run the scripts locally, install the Python dependencies:
+## Core Technologies
+- **Python** - Core scripting and automation
+- **pandas + yFinance** - Market data fetching and analysis
+- **Matplotlib** - Performance visualization and charting
+- **ChatGPT-4** - AI-powered trading decision engine
 
-```bash
-pip install -r requirements.txt
-```
+## Key Features
+- **Robust Data Sources** - Yahoo Finance primary, Stooq fallback for reliability
+- **Automated Stop-Loss** - Automatic position management with configurable stop-losses
+- **Interactive Trading** - Market-on-Open (MOO) and limit order support
+- **Backtesting Support** - ASOF_DATE override for historical analysis
+- **Performance Analytics** - CAPM analysis, Sharpe/Sortino ratios, drawdown metrics
+- **Trade Logging** - Complete transparency with detailed execution logs
+
+## System Requirements
+- Python 3.7+
+- Internet connection for market data
+- ~10MB storage for CSV data files
 
 # Follow Along
 The experiment runs from June 2025 to December 2025.  
