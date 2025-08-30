@@ -1,44 +1,15 @@
 # ChatGPT Micro-Cap Experiment
 Welcome to the repo behind my 6-month live trading experiment where ChatGPT manages a real-money micro-cap portfolio.
 
-## Quick Start
-
-1. **Install dependencies:**
-   ```bash
-   # Recommended: Use a virtual environment
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+## Overview on getting started: [Here](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/blob/main/Start%20Your%20Own/README.md)
    
-   pip install -r requirements.txt
-   ```
-
-2. **Run the trading script:**
-   ```bash
-   python trading_script.py
-   ```
-
-3. **Generate performance graphs:**
-   ```bash
-   python "Scripts and CSV Files/Generate_Graph.py"
-   ```
-
-4. **Run with specific options:**
-   ```bash
-   # Use specific portfolio file
-   python trading_script.py --file "Scripts and CSV Files/chatgpt_portfolio_update.csv"
-   
-   # Backtest with specific date
-   python trading_script.py --asof 2025-08-27
-   ```
-
 ## Repository Structure
 
 - **`trading_script.py`** - Main trading engine with portfolio management and stop-loss automation
-- **`Scripts and CSV Files/`** - Active trading data, CSV files, and wrapper scripts
+- **`Scripts and CSV Files/`** - My personal portfolio (updates every trading day)
 - **`Start Your Own/`** - Template files and guide for starting your own experiment  
 - **`Weekly Deep Research (MD|PDF)/`** - Research summaries and performance reports
 - **`Experiment Details/`** - Documentation, methodology, prompts, and Q&A
-
 
 # The Concept
 Every day, I kept seeing the same ad about having some A.I. pick undervalued stocks. It was obvious it was trying to get me to subscribe to some garbage, so I just rolled my eyes.  
