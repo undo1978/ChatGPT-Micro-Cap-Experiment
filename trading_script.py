@@ -39,12 +39,16 @@ except Exception:
 ASOF_DATE: pd.Timestamp | None = None
 
 def set_asof(date: str | datetime | pd.Timestamp | None) -> None:
-    """Set a global 'as of' date so the script treats that day as 'today'."""
+    """Set a global 'as of' date so the script treats that day as 'today'. Use 'YYYY-MM-DD' format."""
     global ASOF_DATE
     if date is None:
+        print("No prior date passed. Using today's date...")
         ASOF_DATE = None
         return
     ASOF_DATE = pd.Timestamp(date).normalize()
+    pure_date = ASOF_DATE.date()
+
+    print(f"Setting date as {pure_date}.")
 
 # Allow env var override:  ASOF_DATE=YYYY-MM-DD python trading_script.py
 _env_asof = os.environ.get("ASOF_DATE")

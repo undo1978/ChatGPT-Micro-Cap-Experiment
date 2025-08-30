@@ -6,7 +6,9 @@ import sys
 # Allow importing the shared module from the repository root
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from trading_script import main
+from trading_script import main#, set_asof
+
+# set_asof("2025-08-28")
 
 
 if __name__ == "__main__":
