@@ -5,22 +5,52 @@ This folder lets you run the trading experiment on your own computer. It contain
 Run the commands below from the repository root. The scripts automatically
 save their CSV data inside this folder.
 
+## Overview
+
+ **Install dependencies:**
+   ```bash
+   # Recommended: Use a virtual environment
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   
+   pip install -r requirements.txt
+   ```
+
+**Run Trading Script:**
+   ```bash
+   # always include a CSV file of history
+   python trading_script.py --file "Start Your Own/chatgpt_portfolio_update.csv"
+   ```
+
+**To Save Prior Days:**
+   ```bash
+
+   # Save data with specific date
+   python trading_script.py --asof 2025-08-27 --file "Start Your Own/chatgpt_portfolio_update.csv"
+   ```
+
+**Generate performance graphs:**
+   ```bash
+   python "Start Your Own/Generate_Graph.py"
+   ```
+
+### Arguement Table for 'Generate_Graph.py'
+
+| Argument            | Type   | Default          | Description                                                        |
+|---------------------|--------|------------|--------------------------------------------------------------------------|
+| `--start-date`      | str    | Start date in CSV| Start date in `YYYY-MM-DD` format                                  |
+| `--end-date`        | str    | End date in CSV| End date in `YYYY-MM-DD` format                                      |
+| `--start-equity`    | float  | 100.0   | Baseline to index both series (default 100)                                 |
+| `--baseline-file`   | str    | —       | Path to a text file containing a single number for baseline                 |
+| `--output`          | str    | —       | Optional path to save the chart (`.png` / `.jpg` / `.pdf`)                  |
+
 ## Trading_Script.py
 
 This script updates your portfolio and logs trades.
 
-1. **Install Python packages**
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. **Run the script**
-   ```bash
-   python "Start Your Own/Trading_Script.py"
-   ```
-
 **NOTE: ALWAYS RUN PROGRAM AFTER TRADING DAYS, OR YESTERDAY'S DATA WILL BE USED.**
 
-3. **Follow the prompts**
+**Follow the prompts**
    - The program uses past data from 'chatgpt_portfolio_update.csv' to automatically grab today's portfolio.
    - If 'chatgpt_portfolio_update.csv' is empty (meaning no past trading days logged), you will required to enter your starting cash.
    - From here, you can set up your portfolio or make any changes.
@@ -33,16 +63,15 @@ This script updates your portfolio and logs trades.
 
 This script draws a graph of your portfolio versus the S&P 500.
 
+**Program will ALWAYS use 'Start Your Own/chatgpt_portfolio_update.csv' for data.**
+
 1. **Ensure you have portfolio data**
    - Run `Trading_Script.py` at least once so `chatgpt_portfolio_update.csv` has data.
 2. **Run the graph script**
    ```bash
    python "Start Your Own/Generate_Graph.py" --baseline-equity 100
    ```
-   - Optional flags `--start-date` and `--end-date` accept dates in `YYYY-MM-DD` format. For example:
-   ```bash
-   python "Start Your Own/Generate_Graph.py" --baseline-equity 100 --start-date 2023-01-01 --end-date 2023-12-31
-   ```
+   
 3. **View the chart**
    - A window opens showing your portfolio value vs. S&P 500. Results will be adjusted for baseline equity.
 
