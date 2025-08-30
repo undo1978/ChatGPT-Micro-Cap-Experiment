@@ -19,13 +19,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast,Dict, List, Optional
 import os
 import warnings
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import json
+import logging
 
 
 warnings.simplefilter("ignore", category=FutureWarning)
@@ -65,6 +67,84 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR  # Save files alongside this script by default
 PORTFOLIO_CSV = DATA_DIR / "chatgpt_portfolio_update.csv"
 TRADE_LOG_CSV = DATA_DIR / "chatgpt_trade_log.csv"
+DEFAULT_BENCHMARKS = ["IWO", "XBI", "SPY", "IWM"]
+
+# ------------------------------
+# Configuration helpers — benchmark tickers (tickers.json)
+# ------------------------------
+
+
+
+logger = logging.getLogger(__name__)
+
+def _read_json_file(path: Path) -> Optional[Dict]:
+    """Read and parse JSON from `path`. Return dict on success, None if not found or invalid.
+
+    - FileNotFoundError -> return None
+    - JSON decode error -> log a warning and return None
+    - Other IO errors -> log a warning and return None
+    """
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError as exc:
+        logger.warning("tickers.json present but malformed: %s -> %s. Falling back to defaults.", path, exc)
+        return None
+    except Exception as exc:
+        logger.warning("Unable to read tickers.json (%s): %s. Falling back to defaults.", path, exc)
+        return None
+
+def load_benchmarks(script_dir: Path | None = None) -> List[str]:
+    """Return a list of benchmark tickers.
+
+    Looks for a `tickers.json` file in either:
+      - script_dir (if provided) OR the module SCRIPT_DIR, and then
+      - script_dir.parent (project root candidate).
+
+    Expected schema:
+      {"benchmarks": ["IWO", "XBI", "SPY", "IWM"]}
+
+    Behavior:
+    - If file missing or malformed -> return DEFAULT_BENCHMARKS copy.
+    - If 'benchmarks' key missing or not a list -> log warning and return defaults.
+    - Normalizes tickers (strip, upper) and preserves order while removing duplicates.
+    """
+    base = Path(script_dir) if script_dir else SCRIPT_DIR
+    candidates = [base, base.parent]
+
+    cfg = None
+    cfg_path = None
+    for c in candidates:
+        p = (c / "tickers.json").resolve()
+        data = _read_json_file(p)
+        if data is not None:
+            cfg = data
+            cfg_path = p
+            break
+
+    if not cfg:
+        return DEFAULT_BENCHMARKS.copy()
+
+    benchmarks = cfg.get("benchmarks")
+    if not isinstance(benchmarks, list):
+        logger.warning("tickers.json at %s missing 'benchmarks' array. Falling back to defaults.", cfg_path)
+        return DEFAULT_BENCHMARKS.copy()
+
+    seen = set()
+    result: list[str] = []
+    for t in benchmarks:
+        if not isinstance(t, str):
+            continue
+        up = t.strip().upper()
+        if not up:
+            continue
+        if up not in seen:
+            seen.add(up)
+            result.append(up)
+
+    return result if result else DEFAULT_BENCHMARKS.copy()
 
 
 # ------------------------------
@@ -749,7 +829,11 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
 
     end_d = last_trading_date()                           # Fri on weekends
     start_d = (end_d - pd.Timedelta(days=4)).normalize()  # go back enough to capture 2 sessions even around holidays
-    for stock in portfolio_dict + [{"ticker": "IWO"}, {"ticker": "XBI"}, {"ticker": "SPY"}, {"ticker": "IWM"}]:
+    
+    benchmarks = load_benchmarks()  # reads tickers.json or returns defaults
+    benchmark_entries = [{"ticker": t} for t in benchmarks]
+
+    for stock in portfolio_dict + benchmark_entries:
         ticker = str(stock["ticker"]).upper()
         try:
             fetch = download_price_data(ticker, start=start_d, end=(end_d + pd.Timedelta(days=1)), progress=False)
