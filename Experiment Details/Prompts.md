@@ -138,7 +138,6 @@ Current Portfolio State
 
 [ Snapshot ]
 {{SNAPSHOT_BLOCK}}
-Include cash total equity benchmark notes open stops or targets any rule-relevant fields and any concentration limits such as max position percent {{MAX_POSITION_PCT}} if applicable.
 
 Last Analyst Thesis For Current Holdings
 {{LAST_THESIS_SUMMARY}}
