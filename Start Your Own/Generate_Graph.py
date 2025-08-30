@@ -1,4 +1,3 @@
-# Generate_Graph.py
 """
 Plot portfolio performance vs. S&P 500 with a configurable starting equity.
 
@@ -28,15 +27,43 @@ def parse_date(date_str: str, label: str) -> pd.Timestamp:
         raise SystemExit(f"Invalid {label} '{date_str}'. Use YYYY-MM-DD.") from exc
 
 
-def _normalize_to_start(series: pd.Series, start_value: float) -> pd.Series:
-    """Scale a series so its first non-NA point equals start_value."""
-    s = pd.to_numeric(series, errors="coerce")
-    if s.isna().all():
-        raise SystemExit("Series has no numeric values to normalize.")
-    base = s.dropna().iloc[0]
-    if base == 0:
-        raise SystemExit("Cannot normalize series with base value 0.")
-    return s / base * float(start_value)
+def _normalize_to_start(series, starting_equity):
+    """
+    Normalize a series to start at starting_equity
+    """
+    # Ensure we're working with a Series
+    if isinstance(series, pd.DataFrame):
+        # If it's a DataFrame, take the first column (assuming it's the value column)
+        s = pd.to_numeric(series.iloc[:, 0], errors="coerce")
+    else:
+        s = pd.to_numeric(series, errors="coerce")
+    
+    if s.empty:
+        return pd.Series()
+    
+    start_value = s.iloc[0]
+    if start_value == 0:
+        return s * 0  # Return zeros if start value is zero to avoid division by zero
+    
+    normalized = (s / start_value) * starting_equity
+    return normalized
+
+
+def _align_to_dates(sp500_data: pd.DataFrame, portfolio_dates: pd.Series) -> pd.Series:
+    """
+    Align S&P 500 data to portfolio dates using forward fill.
+    Returns a Series with values aligned to portfolio_dates.
+    """
+    # Create a DataFrame with all portfolio dates
+    aligned_df = pd.DataFrame({'Date': portfolio_dates})
+    
+    # Merge with S&P 500 data
+    merged = aligned_df.merge(sp500_data, on='Date', how='left')
+    
+    # Forward fill missing values
+    merged['Value'] = merged['Value'].ffill()
+    
+    return merged['Value']
 
 
 def load_portfolio_details(
@@ -64,35 +91,55 @@ def load_portfolio_details(
         start_date = min_date
     if end_date is None or end_date > max_date:
         end_date = max_date
-    if start_date > end_date:
-        raise SystemExit("Start date must be on or before end date.")
+    if start_date is not None and end_date is not None:
+        if start_date > end_date:
+            raise SystemExit("Start date must be on or before end date.")
+
 
     mask = (totals["Date"] >= start_date) & (totals["Date"] <= end_date)
     return totals.loc[mask, ["Date", "Total Equity"]].reset_index(drop=True)
 
 
-def download_sp500(dates: pd.Series, starting_equity: float = 100.0) -> pd.DataFrame:
+def download_sp500(dates, starting_equity):
     """
-    Download S&P 500 (^GSPC), align to given dates, and normalize to starting_equity.
-    Returns DataFrame with columns ['Date', 'SPX Value'] aligned 1:1 with dates.
+    Download S&P 500 data and normalize to starting equity
     """
-    if dates.empty:
-        raise SystemExit("No dates provided to align benchmark.")
-
-    start_date = pd.to_datetime(dates.min())
-    end_date = pd.to_datetime(dates.max())
-
-    sp500 = yf.download("^GSPC", start=start_date, end=end_date + pd.Timedelta(days=1), progress=False)
-    sp500 = cast(pd.DataFrame, sp500)
-
-    if sp500.empty or "Close" not in sp500.columns:
-        raise SystemExit("Failed to download S&P 500 data.")
-
-    # Align to portfolio dates & forward-fill missing days (weekends/holidays)
-    aligned = sp500["Close"].reindex(pd.to_datetime(dates)).ffill().bfill()
-    norm = _normalize_to_start(aligned, starting_equity)
-
-    return pd.DataFrame({"Date": pd.to_datetime(dates), "SPX Value": norm.values})
+    if len(dates) == 0:
+        return pd.DataFrame()
+    
+    start_date = dates.min()
+    end_date = dates.max()
+    
+    # Download S&P 500 data with error handling
+    try:
+        sp500 = yf.download("^GSPC", start=start_date, end=end_date + pd.Timedelta(days=1), progress=False)
+    except Exception as e:
+        print(f"Error downloading S&P 500 data: {e}")
+        return pd.DataFrame()
+    
+    # Check if download returned None or empty
+    if sp500 is None or sp500.empty:
+        return pd.DataFrame()
+    
+    # Reset index to get Date as a column
+    sp500 = sp500.reset_index()
+    
+    # Extract only the 'Close' price series
+    sp500_close = sp500[['Date', 'Close']].copy()
+    sp500_close.columns = ['Date', 'Value']
+    
+    # Align with portfolio dates
+    aligned_values = _align_to_dates(sp500_close, dates)
+    
+    # Normalize to starting equity
+    norm = _normalize_to_start(aligned_values, starting_equity)
+    
+    result = pd.DataFrame({
+        'Date': dates,
+        'SPX Value': norm.values
+    })
+    
+    return result
 
 
 def plot_comparison(
@@ -111,7 +158,7 @@ def plot_comparison(
 
     ax.plot(portfolio["Date"], portfolio["Total Equity"], label=f"Portfolio (start={starting_equity:g})", marker="o")
     ax.plot(spx["Date"], spx["SPX Value"], label="S&P 500", marker="o", linestyle="--")
-
+    
     # Annotate last points as percent vs baseline
     p_last = float(portfolio["Total Equity"].iloc[-1])
     s_last = float(spx["SPX Value"].iloc[-1])
