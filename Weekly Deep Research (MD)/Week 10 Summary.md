@@ -13,7 +13,7 @@ _Date: August 30, 2025_
 - `IINN` — sell 10 (exit). Catalyst ($22.5M order) realized; momentum faded; dilution risk. Redeploy ~\$11 to higher-impact ideas (ATYR, FBIO).
 
 ## Initiate New Position
-- `FBIO` — buy 4 @ ~\$2.58; stop $2.00. Near-term catalyst: **Sept 30** FDA decision on CUTX-101 (potential PRV worth ~$100M+), which could drive a re-rating. Diversified assets cushion downside vs. single-asset risk. Small size (~\$10, ~7–8% of portfolio); liquidity adequate (avg volume >300K).
+- `FBIO` — buy 4 @ $2.58; stop $2.00. Near-term catalyst: **Sept 30** FDA decision on CUTX-101 (potential PRV worth ~$100M+), which could drive a re-rating. Diversified assets cushion downside vs. single-asset risk. ($10, ~7–8% of portfolio); liquidity adequate (avg volume >300K).
 
 ## Notes
 - No other new positions added. `OKYO` and `GENK` were considered but not added due to timing and cash constraints.
