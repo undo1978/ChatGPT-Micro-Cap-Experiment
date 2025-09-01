@@ -95,5 +95,4 @@ One final shameless plug: (https://substack.com/@nathanbsmith)
 
 Find a mistake in the logs or have advice?  
 
-My Gmail is: nathanbsmith.business@gmail.com
 Please reach out here: **nathanbsmith.business@gmail.com**
