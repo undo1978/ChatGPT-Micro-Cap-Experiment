@@ -89,10 +89,10 @@ The experiment runs from June 2025 to December 2025.
 Every trading day I will update the portfolio CSV file.  
 If you feel inspired to do something similar, feel free to use this as a blueprint.
 
-Updates are posted weekly on my blog — more coming soon!
+Updates are posted weekly on my blog, more coming soon!
 
-One final shameless plug: (https://substack.com/@nathanbsmith)
+Blog: [A.I Controls Stock Account](https://nathanbsmith729.substack.com)
 
-Find a mistake in the logs or have advice?  
+Have feature requests or advice?  
 
 Please reach out here: **nathanbsmith.business@gmail.com**
