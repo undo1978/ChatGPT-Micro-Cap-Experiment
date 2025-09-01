@@ -34,8 +34,8 @@ So, starting with just $100, I wanted to answer a simple but powerful question:
 - [Prompts](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/blob/main/Experiment%20Details/Prompts.md)  
 - [Starting Your Own](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/blob/main/Start%20Your%20Own/README.md)  
 - [Research Summaries (MD)](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/tree/main/Weekly%20Deep%20Research%20(MD))  
-- [Full Deep Research Reports (PDF)](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/tree/main/Weekly%20Deep%20Research%20(PDF))  
-
+- [Full Deep Research Reports (PDF)](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/tree/main/Weekly%20Deep%20Research%20(PDF))
+- [Chats](https://github.com/LuckyOne7777/ChatGPT-Micro-Cap-Experiment/blob/main/Experiment%20Details/Chats.md)
 # Current Performance
 
 <!-- To update performance chart: 
@@ -91,7 +91,9 @@ If you feel inspired to do something similar, feel free to use this as a bluepri
 
 Updates are posted weekly on my blog — more coming soon!
 
-One final shameless plug: (https://substack.com/@nathanbsmith?utm_source=edit-profile-page)
+One final shameless plug: (https://substack.com/@nathanbsmith)
 
 Find a mistake in the logs or have advice?  
+
+My Gmail is: nathanbsmith.business@gmail.com
 Please reach out here: **nathanbsmith.business@gmail.com**
