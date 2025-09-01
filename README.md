@@ -43,7 +43,7 @@ So, starting with just $100, I wanted to answer a simple but powerful question:
      2. Update the dates and description below
      3. Update the "Last Updated" date -->
 
-**Last Updated:** August 2025
+**Last Updated:** August 29th, 2025
 
 ![Latest Performance Results](Results.png)
 
@@ -93,6 +93,6 @@ Updates are posted weekly on my blog, more coming soon!
 
 Blog: [A.I Controls Stock Account](https://nathanbsmith729.substack.com)
 
-Have feature requests or advice?  
+Have feature requests or any advice?  
 
 Please reach out here: **nathanbsmith.business@gmail.com**
