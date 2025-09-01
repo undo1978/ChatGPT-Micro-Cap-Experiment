@@ -1,4 +1,4 @@
-**Note: I unfortunately only started documenting chats on (8-1)**
+**Note: I unfortunately only started documenting chats on (8-1).**
 
 | Chat | Timestamp | Link |
 |------|-----------|------|
