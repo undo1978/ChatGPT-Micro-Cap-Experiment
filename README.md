@@ -45,7 +45,7 @@ So, starting with just $100, I wanted to answer a simple but powerful question:
 
 **Last Updated:** August 2025
 
-![Latest Performance Results](%286-30%20-%208-15%29%20Results.png)
+![Latest Performance Results](Results.png)
 
 **Current Status:** Portfolio is outperforming the S&P 500 benchmark
 
