@@ -80,7 +80,7 @@ This project is an attempt to find out — with transparency, data, and a real b
 - **Trade Logging** - Complete transparency with detailed execution logs
 
 ## System Requirements
-- Python 3.7+
+- Python  3.11+
 - Internet connection for market data
 - ~10MB storage for CSV data files
 
