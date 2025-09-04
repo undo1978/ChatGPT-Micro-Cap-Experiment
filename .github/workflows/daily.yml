@@ -1,9 +1,4 @@
 name: daily-microcap
-concurrency:
-group: daily-microcap
-cancel-in-progress: false
-
-
 jobs:
 run:
 runs-on: ubuntu-latest
