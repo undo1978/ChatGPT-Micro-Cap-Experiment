@@ -50,11 +50,16 @@ jobs:
         if: steps.marketday.outputs.is_open == 'true'
         run: |
           python -m pip install --upgrade pip
-          # Install requirements if present
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f extra-requirements.txt ]; then pip install -r extra-requirements.txt; fi
-          # Ensure pandas-datareader is installed even if requirements.txt forgot it
-          pip install "pandas-datareader>=0.10.0"
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+          if [ -f extra-requirements.txt ]; then python -m pip install -r extra-requirements.txt; fi
+          # Kindlusta pandas-datareader sama Pythoni alla
+          python -m pip install "pandas-datareader>=0.10.0"
+          # Kiirkontroll, et see tõesti leitakse selle Pythoni poolt
+          python - <<'PY'
+          import pkgutil, sys
+          assert pkgutil.find_loader('pandas_datareader'), 'pandas_datareader not installed for this python'
+          print('pandas_datareader OK')
+          PY
 
       - name: Sanity check (files & imports)
         if: steps.marketday.outputs.is_open == 'true'
