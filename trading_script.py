@@ -222,6 +222,83 @@ def download_price_data(ticker: str, **kwargs: Any) -> FetchResult:
     empty = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Adj Close", "Volume"])  # for safety
     return FetchResult(empty, "empty")
 
+def _env_list(name: str, default: str = "") -> list[str]:
+    s = os.getenv(name, default) or ""
+    return [x.strip().upper() for x in s.replace(";", ",").split(",") if x.strip()]
+
+def _first_usable_ticker(candidates: list[str], max_spread_pct: float) -> tuple[str | None, dict | None]:
+    """Vali esimene kandidaat, mis läbib lihtsa spread/likviidsuse filtri; tagasta (ticker, viimase päeva OHLCV dict)."""
+    s, e = trading_day_window()
+    for t in candidates:
+        fetch = download_price_data(t, start=s, end=e, auto_adjust=False, progress=False)
+        df = fetch.df
+        if df.empty:
+            continue
+        try:
+            close = float(df["Close"].iloc[-1])
+            high  = float(df["High"].iloc[-1])
+            low   = float(df["Low"].iloc[-1])
+            vol   = float(df["Volume"].iloc[-1])
+        except Exception:
+            continue
+
+        if close <= 0 or vol <= 0:
+            continue
+
+        spread_pct = (high - low) / close * 100 if close else 999.0
+        if spread_pct <= max_spread_pct:
+            return t, {"close": close, "high": high, "low": low, "vol": vol, "spread_pct": spread_pct}
+    return None, None
+
+def bootstrap_recos_for_first_run(cash: float, allocation: float, stop_pct: float, max_spread_pct: float) -> None:
+    """
+    Kui portfell on tühi ja HEADLESS_TICKER puudub, proovi anda vähemalt 1 BUY-soovitus.
+    Eelistus:
+      1) WATCHLIST env (nt 'IWO,XBI,SPY,IWM' või su microcapid)
+      2) sisseehitatud vaikimisi: IWO, XBI, SPY, IWM
+    """
+    # 1) Kasutaja watchlist (repo Secrets → WATCHLIST: 'TICK1,TICK2,...')
+    watch = _env_list("WATCHLIST")
+    # 2) Vaikimisi kandidaadid (turvalised ETF-id, et alati oleks “midagi”)
+    default_candidates = ["IWO", "XBI", "SPY", "IWM"]
+
+    candidates = watch or default_candidates
+
+    ticker, stats = _first_usable_ticker(candidates, max_spread_pct=max_spread_pct)
+    if not ticker or not stats:
+        # Kui mitte ükski ei läbinud filtri, anna vähemalt SPY prooviks (sageli läbib)
+        ticker = "SPY"
+        s, e = trading_day_window()
+        fetch = download_price_data(ticker, start=s, end=e, auto_adjust=False, progress=False)
+        df = fetch.df
+        if df.empty:
+            return  # jätamegi tühjaks, kui andmeid pole
+
+        close = float(df["Close"].iloc[-1])
+        stats = {"close": close, "high": float(df["High"].iloc[-1]), "low": float(df["Low"].iloc[-1]),
+                 "vol": float(df["Volume"].iloc[-1]), "spread_pct": (float(df["High"].iloc[-1]) - float(df["Low"].iloc[-1]))/close*100 if close else 999.0}
+
+    # Arvuta kogus kas allocation’i või riskiga (kui soovid risk-põhist, muuda all)
+    price = stats["close"]
+    if price <= 0:
+        return
+
+    # Allocation-põhine suurus (lihtne ja turvaline esimeseks korraks)
+    target_value = cash * max(0.0, allocation)
+    shares = int(target_value // price)
+    if shares <= 0:
+        # Kui 1000€ ja kallis ticker, võta 1 ühik, et raport poleks tühi
+        shares = 1
+
+    stop = round(price * (1.0 - stop_pct), 4) if stop_pct and stop_pct > 0 else 0.0
+
+    add_reco(
+        "BUY",
+        ticker,
+        reason=f"bootstrap: spread {stats['spread_pct']:.2f}% ≤ {max_spread_pct}%",
+        target_shares=shares,
+        stop=stop,
+    )
 
 # ---------------- Portfolio sizing helpers ----------------
 
