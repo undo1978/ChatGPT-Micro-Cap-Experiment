@@ -1,4 +1,15 @@
 name: daily-microcap
+on:
+schedule:
+- cron: "5 15 * * *" # 18:05 EEST = 15:05 UTC (kohanda soovi järgi)
+workflow_dispatch:
+
+
+concurrency:
+group: daily-microcap
+cancel-in-progress: false
+
+
 jobs:
 run:
 runs-on: ubuntu-latest
@@ -17,7 +28,6 @@ key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
 uses: actions/setup-python@v5
 with:
 python-version: "3.11"
-
 
 - name: Check trading day (XNYS)
 id: marketday
