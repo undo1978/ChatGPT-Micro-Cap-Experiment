@@ -29,6 +29,80 @@ import yfinance as yf
 import json
 import logging
 
+import os, argparse, builtins, math
+yf = None
+
+
+def parse_args():
+p = argparse.ArgumentParser()
+p.add_argument("--headless", action="store_true", help="Run without interactive prompts")
+p.add_argument("--allocation", type=float, default=0.10,
+help="Max osakaal ühest tickerist (nt 0.10 = 10% portfellist)")
+p.add_argument("--stop_pct", type=float, default=float(os.getenv("STOP_PCT", "0.1")),
+help="Stop-loss protsent, nt 0.1 = 10%")
+return p.parse_args()
+
+
+_args = None
+
+
+def get_last_close_price(ticker: str) -> float:
+if yf is None:
+return 0.0
+try:
+data = yf.Ticker(ticker).history(period="5d")
+if not data.empty:
+return float(data["Close"].iloc[-1])
+except Exception:
+pass
+return 0.0
+
+
+def compute_stop_default(ticker: str, stop_pct: float) -> float:
+price = get_last_close_price(ticker)
+return round(price * (1.0 - stop_pct), 4) if price > 0 else 0.0
+
+
+def get_target_shares(ticker: str, allocation: float) -> int:
+# Eelistus: TOTAL_PORTFOLIO_EUR või TRADE_BUDGET_EUR keskkonnamuutuja
+total = float(os.getenv("TOTAL_PORTFOLIO_EUR", "0") or "0")
+budget = float(os.getenv("TRADE_BUDGET_EUR", "0") or "0")
+if total > 0:
+target_value = total * allocation
+elif budget > 0:
+target_value = budget
+else:
+target_value = 200.0 # vaikimisi
+price = get_last_close_price(ticker)
+if price <= 0:
+return 0
+return max(0, int(target_value // price))
+
+
+# Kogume soovitused siia; lisa sinna, kus otsused tekivad
+RECOMMENDATIONS = [] # elemendid: {action, ticker, reason, target_shares, stop}
+
+
+def add_reco(action: str, ticker: str, reason: str = "", target_shares: int = 0, stop: float = 0.0):
+RECOMMENDATIONS.append({
+"action": action.upper(),
+"ticker": ticker,
+"reason": reason,
+"target_shares": target_shares,
+"stop": stop,
+})
+
+
+
+
+def format_reco(recos):
+lines = []
+for r in recos:
+line = f"{r['action']:<5} {r['ticker']} kogus≈{r.get('target_shares','?')} SL={r.get('stop','-')} — {r.get('reason','')}"
+lines.append(line)
+return "\n".join(lines) if lines else "(täna ettepanekuid ei tekkinud)"
+
+
 # Optional pandas-datareader import for Stooq access
 try:
     import pandas_datareader.data as pdr
@@ -413,26 +487,74 @@ def process_portfolio(
 Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press Enter to continue: """
             ).strip().lower()
 
-            if action == "b":
-                ticker = input("Enter ticker symbol: ").strip().upper()
-                order_type = input("Order type? 'm' = market-on-open, 'l' = limit: ").strip().lower()
+        if action == "b":
+    # Kui pole veel parameetreid parsetud, tee seda
+    try:
+        _args  # noqa: F821
+    except NameError:
+        _args = None
+    if _args is None:
+        _args = parse_args()  # --headless, --allocation, --stop_pct
 
-                try:
-                    shares = float(input("Enter number of shares: "))
-                    if shares <= 0:
-                        raise ValueError
-                except ValueError:
-                    print("Invalid share amount. Buy cancelled.")
-                    continue
+    if _args.headless:
+        # HEADLESS REŽIIM
+        # 1) Ticker: proovi võtta signaalidest või keskkonnast
+        #    Pane vajadusel ENV: HEADLESS_TICKER=XYZ (ainult kui sul pole signaale)
+        ticker_env = os.getenv("HEADLESS_TICKER", "").strip().upper()
+        try:
+            ticker  # noqa: F821
+        except NameError:
+            ticker = ""
+        if not ticker:
+            ticker = ticker_env
 
-                if order_type == "m":
-                    try:
-                        stop_loss = float(input("Enter stop loss (or 0 to skip): "))
-                        if stop_loss < 0:
-                            raise ValueError
-                    except ValueError:
-                        print("Invalid stop loss. Buy cancelled.")
-                        continue
+        if not ticker:
+            print("Headless: ticker puudub (pane HEADLESS_TICKER või anna signaalidest). Vahelejätmine.")
+            continue
+
+        order_type = "m"  # vaikimisi market-on-open
+        shares = get_target_shares(ticker, allocation=_args.allocation)  # int
+        stop_loss = compute_stop_default(ticker, stop_pct=_args.stop_pct)  # float või 0.0
+
+        if shares <= 0:
+            print(f"Headless: {ticker} jaoks ei saanud positiivset kogust. Vahelejätmine.")
+            continue
+
+        # lisa soovitus kokkuvõttesse (et e-kiri moodustuks)
+        add_reco("BUY", ticker,
+                 reason=f"headless run: order={order_type}",
+                 target_shares=shares, stop=stop_loss)
+
+        # siia pane sinu tegelik ostuloogika / logikirjed / CSV uuendused
+        # example:
+        # place_order(ticker, shares, order_type, stop_loss)
+
+    else:
+        # INTERAKTIIVNE REŽIIM (sinu algne loogika)
+        ticker = input("Enter ticker symbol: ").strip().upper()
+        order_type = input("Order type? 'm' = market-on-open, 'l' = limit: ").strip().lower()
+
+        try:
+            shares = float(input("Enter number of shares: "))
+            if shares <= 0:
+                raise ValueError
+        except ValueError:
+            print("Invalid share amount. Buy cancelled.")
+            continue
+
+        if order_type == "m":
+            try:
+                stop_loss = float(input("Enter stop loss (or 0 to skip): "))
+                if stop_loss < 0:
+                    raise ValueError
+            except ValueError:
+                print("Invalid stop loss. Buy cancelled.")
+                continue
+
+        # (soovi korral võid ka interaktiivses režiimis lisada kokkuvõtte tarbeks)
+        add_reco("BUY", ticker, reason=f"interactive: order={order_type}",
+                 target_shares=int(shares), stop=stop_loss)
+
 
                     s, e = trading_day_window()
                     fetch = download_price_data(ticker, start=s, end=e, auto_adjust=False, progress=False)
@@ -1174,3 +1296,22 @@ if __name__ == "__main__":
         print("No portfolio CSV found. Create one or run main() with your file path.")
     else:
         main(args.file, Path(args.data_dir) if args.data_dir else None)
+
+if _args is None:
+_args = parse_args()
+
+
+if _args.headless:
+# püüame ka tavalise väljundi kinni, et lisada e‑kirja
+buf = io.StringIO()
+with redirect_stdout(buf):
+print("Soovitatud tehingud:")
+print(format_reco(RECOMMENDATIONS))
+body = buf.getvalue()
+
+
+# lisa vabatekst: riskid jm
+body += "\n\nMärkused: micro-cap volatiilsus, slippage, likviidsus; käsitle infot õppematerjalina.\n"
+
+
+send_email("Päevane portfellisoovitus", body)
