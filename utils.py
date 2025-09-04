@@ -1,79 +1,81 @@
-from __future__ import annotations
-import time, os
-from dataclasses import dataclass
-from functools import wraps
-from pathlib import Path
+import functools
+import time
 import pandas as pd
-from typing import Callable, Iterable, Any, List, Dict
+from typing import Callable, Any, List, Dict
 
 
-# ---- retry/backoff ----
+def retry(tries: int = 3, delay: int = 2):
+    """
+    Simple retry decorator.
+    Retries a function up to `tries` times with `delay` seconds in between.
+    """
+    def deco(fn: Callable):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            last_exc = None
+            for attempt in range(tries):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as e:
+                    last_exc = e
+                    if attempt < tries - 1:
+                        time.sleep(delay)
+            raise last_exc
+        return wrapper
+    return deco
 
 
-def retry(times: int = 3, base_delay: float = 0.8):
-def deco(fn: Callable):
-@wraps(fn)
-def inner(*args, **kwargs):
-last = None
-for i in range(times):
-try:
-return fn(*args, **kwargs)
-except Exception as e:
-last = e
-time.sleep(base_delay * (2 ** i))
-if last:
-raise last
-return inner
-return deco
-
-
-# ---- atomiline CSV ----
-
-
-def write_csv_atomic(path: Path, df: pd.DataFrame) -> None:
-path = Path(path)
-path.parent.mkdir(parents=True, exist_ok=True)
-tmp = path.with_suffix(path.suffix + ".tmp")
-df.to_csv(tmp, index=False)
-os.replace(tmp, path)
-
-
-# ---- RECO HTML ----
+def write_csv_atomic(path: str, df: pd.DataFrame) -> None:
+    """
+    Write a DataFrame to CSV atomically (safe write).
+    """
+    tmp_path = f"{path}.tmp"
+    df.to_csv(tmp_path, index=False)
+    import os
+    os.replace(tmp_path, path)
 
 
 def recos_to_html(recos: List[Dict[str, Any]]) -> str:
-if not recos:
-return "<p>(täna ettepanekuid ei tekkinud)</p>"
-rows = []
-for r in recos:
-rows.append(
-f"<tr><td>{r['action']}</td><td>{r['ticker']}</td><td style='text-align:right'>{r.get('target_shares','')}</td>"
-f"<td style='text-align:right'>{r.get('stop','')}</td><td>{r.get('reason','')}</td></tr>"
-)
-return (
-"<table border='1' cellpadding='6' cellspacing='0'><thead><tr>"
-"<th>Action</th><th>Ticker</th><th>Kogus</th><th>Stop</th><th>Põhjus</th>"
-"</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
-)
+    """
+    Format recommendations (RECOMMENDATIONS list) into an HTML table.
+    """
+    if not recos:
+        return "<p>(täna ettepanekuid ei tekkinud)</p>"
+
+    rows = []
+    for r in recos:
+        rows.append(
+            f"<tr><td>{r['action']}</td>"
+            f"<td>{r['ticker']}</td>"
+            f"<td>{r.get('target_shares','')}</td>"
+            f"<td>{r.get('stop','')}</td>"
+            f"<td>{r.get('reason','')}</td></tr>"
+        )
+
+    table = (
+        "<table border='1' cellpadding='4' cellspacing='0'>"
+        "<tr><th>Action</th><th>Ticker</th><th>Shares</th><th>Stop</th><th>Reason</th></tr>"
+        + "".join(rows)
+        + "</table>"
+    )
+    return table
 
 
-
-
-def df_to_html(df: pd.DataFrame, max_rows: int = 50) -> str:
-if df is None or df.empty:
-return "<p>(tühi)</p>"
-return df.head(max_rows).to_html(index=False, border=1)
-
-
-# ---- dedupe ----
+def df_to_html(df: pd.DataFrame) -> str:
+    """
+    Convert a DataFrame into a nice HTML table.
+    """
+    if df is None or df.empty:
+        return "<p>(tabel tühi)</p>"
+    return df.to_html(index=False, border=1, justify="center")
 
 
 def dedupe_recos(recos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-seen = set(); out = []
-for r in recos:
-key = (r.get('action'), r.get('ticker'), int(r.get('target_shares', 0)), float(r.get('stop', 0.0)))
-if key in seen: continue
-seen.add(key)
-if int(r.get('target_shares', 0)) > 0:
-out.append(r)
-return out
+    """
+    Deduplicate recommendations by ticker+action, keeping the last one.
+    """
+    seen = {}
+    for r in recos:
+        key = (r["ticker"], r["action"])
+        seen[key] = r
+    return list(seen.values())
