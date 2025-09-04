@@ -52,25 +52,17 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
           if [ -f extra-requirements.txt ]; then python -m pip install -r extra-requirements.txt; fi
-          # Kindlusta pandas-datareader sama Pythoni alla
-          python -m pip install "pandas-datareader>=0.10.0"
-          # Kiirkontroll, et see tõesti leitakse selle Pythoni poolt
-          python - <<'PY'
-          import pkgutil, sys
-          assert pkgutil.find_loader('pandas_datareader'), 'pandas_datareader not installed for this python'
-          print('pandas_datareader OK')
-          PY
 
       - name: Sanity check (files & imports)
         if: steps.marketday.outputs.is_open == 'true'
         run: |
           ls -la
           python - <<'PY'
-          import importlib, os
+          import importlib, os, sys
+          print("Python:", sys.executable)
           for f in ["trading_script.py","config.py","utils.py","email_utils.py"]:
               assert os.path.exists(f), f"Missing file: {f}"
-          # Must-have libs:
-          for m in ["pandas","numpy","yfinance","pandas_datareader","requests"]:
+          for m in ["pandas","numpy","yfinance","requests"]:  # NB: EEMALDATUD pandas_datareader
               importlib.import_module(m)
           print("Sanity OK")
           PY
