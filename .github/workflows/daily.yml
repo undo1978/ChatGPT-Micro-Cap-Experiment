@@ -32,7 +32,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Check trading day (weekend fallback)
+             - name: Check trading day (weekend fallback)
         id: marketday
         shell: bash
         run: |
@@ -66,7 +66,7 @@ jobs:
           print("Sanity OK")
           PY
 
-      - name: Run headless + email summary
+          - name: Run headless + email summary
         if: steps.marketday.outputs.is_open == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
