@@ -2,8 +2,7 @@ name: daily-microcap
 
 on:
   schedule:
-    # 15:05 UTC ≈ 18:05 EEST (suvi). Kohanda vastavalt.
-    - cron: "5 15 * * *"
+    - cron: "5 15 * * *"  # 18:05 EEST (suvi)
   workflow_dispatch:
 
 permissions:
@@ -33,14 +32,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # Lihtne nädalavahetuse kontroll (vajadusel asenda XNYS kalendriga)
       - name: Check trading day (weekend fallback)
         id: marketday
         shell: bash
         run: |
           if python - <<'PY'
           import datetime as dt, sys
-          # Esmaspäev=0 ... Pühapäev=6
           sys.exit(0 if dt.date.today().weekday() < 5 else 1)
           PY
           then
@@ -48,7 +45,6 @@ jobs:
           else
             echo "is_open=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "Market open: ${{ steps.marketday.outputs.is_open }}"
 
       - name: Install deps
         if: steps.marketday.outputs.is_open == 'true'
