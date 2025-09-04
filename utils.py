@@ -4,14 +4,16 @@ import pandas as pd
 from typing import Callable, Any, List, Dict
 
 
-def retry(tries: int = 3, delay: int = 2):
+def retry(tries: int = 3, delay: float = 2.0, backoff: float = 1.0):
     """
-    Simple retry decorator.
-    Retries a function up to `tries` times with `delay` seconds in between.
+    Retry decorator with optional exponential backoff.
+    Example: @retry(tries=3, delay=1.0, backoff=2.0)
+    will wait 1s, 2s, 4s between attempts.
     """
     def deco(fn: Callable):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
+            _delay = delay
             last_exc = None
             for attempt in range(tries):
                 try:
@@ -19,7 +21,8 @@ def retry(tries: int = 3, delay: int = 2):
                 except Exception as e:
                     last_exc = e
                     if attempt < tries - 1:
-                        time.sleep(delay)
+                        time.sleep(_delay)
+                        _delay *= backoff
             raise last_exc
         return wrapper
     return deco
