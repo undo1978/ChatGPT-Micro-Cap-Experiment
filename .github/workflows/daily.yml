@@ -19,6 +19,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: DEBUG – show which workflow file this run is using
+        run: |
+          echo "Workflow path (from GITHUB_WORKFLOW_REF): $GITHUB_WORKFLOW_REF"
+          echo "Repository: $GITHUB_REPOSITORY  Commit: $GITHUB_SHA"
+          echo "--------- .github/workflows/daily.yml (from repo) ---------"
+          sed -n '1,200p' .github/workflows/daily.yml || true
+          echo "-----------------------------------------------------------"
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -32,6 +40,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      # Lihtne nädalavahetuse kontroll
       - name: Check trading day (weekend fallback)
         id: marketday
         shell: bash
@@ -52,20 +61,8 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
           if [ -f extra-requirements.txt ]; then python -m pip install -r extra-requirements.txt; fi
-
-      - name: Sanity check (files & imports)
-        if: steps.marketday.outputs.is_open == 'true'
-        run: |
-          ls -la
-          python - <<'PY'
-          import importlib, os, sys
-          print("Python:", sys.executable)
-          for f in ["trading_script.py","config.py","utils.py","email_utils.py"]:
-              assert os.path.exists(f), f"Missing file: {f}"
-          for m in ["pandas","numpy","yfinance","requests"]:  # NB: EEMALDATUD pandas_datareader
-              importlib.import_module(m)
-          print("Sanity OK")
-          PY
+          # Debug: näita mis paketid reaalselt installitud on
+          python -m pip list
 
       - name: Run headless + email summary
         if: steps.marketday.outputs.is_open == 'true'
@@ -85,8 +82,9 @@ jobs:
           MAX_SPREAD_PCT: ${{ secrets.MAX_SPREAD_PCT }}
           TRAILING_WINDOW: ${{ secrets.TRAILING_WINDOW }}
         run: |
+          ls -la
+          echo "Python executable:"
+          which python
+          python --version
+          echo "Running script…"
           python trading_script.py --headless --allocation 0.10 --sizing risk
-
-      - name: Skip note
-        if: steps.marketday.outputs.is_open != 'true'
-        run: echo "Market closed today – skipping run."
