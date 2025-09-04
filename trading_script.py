@@ -900,7 +900,7 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
         print(f"Cash balance: ${cash:,.2f}")
         return
 
-    totals["Date"] = pd.to_datetime(totals["Date"])  # tolerate ISO strings
+    totals["Date"] = pd.to_datetime(totals["Date"], format="mixed", errors="coerce")  # tolerate ISO strings
     totals = totals.sort_values("Date")
 
     final_equity = float(totals.iloc[-1]["Total Equity"])
@@ -1106,7 +1106,7 @@ def load_latest_portfolio_state(
         return portfolio, cash
 
     non_total = df[df["Ticker"] != "TOTAL"].copy()
-    non_total["Date"] = pd.to_datetime(non_total["Date"])
+    non_total["Date"] = pd.to_datetime(non_total["Date"], format="mixed", errors="coerce")
 
     latest_date = non_total["Date"].max()
     latest_tickers = non_total[non_total["Date"] == latest_date].copy()
@@ -1138,7 +1138,7 @@ def load_latest_portfolio_state(
     latest_tickers = latest_tickers.reset_index(drop=True).to_dict(orient="records")
 
     df_total = df[df["Ticker"] == "TOTAL"].copy()
-    df_total["Date"] = pd.to_datetime(df_total["Date"])
+    df_total["Date"] = pd.to_datetime(df_total["Date"], format="mixed", errors="coerce")
     latest = df_total.sort_values("Date").iloc[-1]
     cash = float(latest["Cash Balance"])
     return latest_tickers, cash
