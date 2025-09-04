@@ -1,87 +1,51 @@
 name: daily-microcap
-on:
-schedule:
-- cron: "5 15 * * *" # 18:05 EEST = 15:05 UTC (kohanda soovi järgi)
-workflow_dispatch:
 
+on:
+  schedule:
+    - cron: "5 15 * * *"  # 18:05 EEST = 15:05 UTC
+  workflow_dispatch:
 
 concurrency:
-group: daily-microcap
-cancel-in-progress: false
-
+  group: daily-microcap
+  cancel-in-progress: false
 
 jobs:
-run:
-runs-on: ubuntu-latest
-steps:
-- uses: actions/checkout@v4
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
 
-- name: Cache pip
-uses: actions/cache@v4
-with:
-path: ~/.cache/pip
-key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
+      - name: Check trading day (XNYS)
+        id: marketday
+        run: |
+          python - <<'PY'
+          import sys, datetime as dt, os
+          try:
+              import pandas_market_calendars as mcal
+              nyse = mcal.get_calendar('XNYS')
+              today = dt.date.today()
+              sched = nyse.schedule(start_date=today, end_date=today)
+              is_open = 'true' if not sched.empty else 'false'
+          except Exception:
+              # fallback: skip ainult nädalavahetusel
+              is_open = 'false' if dt.date.today().weekday() >= 5 else 'true'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"is_open={is_open}\n")
+          PY
 
-- name: Setup Python
-uses: actions/setup-python@v5
-with:
-python-version: "3.11"
-
-- name: Check trading day (XNYS)
-id: marketday
-run: |
-python - <<'PY'
-import sys, datetime as dt
-try:
-import pandas_market_calendars as mcal
-nyse = mcal.get_calendar('XNYS')
-today = dt.date.today()
-sched = nyse.schedule(start_date=today, end_date=today)
-is_open = 'true' if not sched.empty else 'false'
-except Exception:
-# fallback: skip ainult nädalavahetusel
-is_open = 'false' if dt.date.today().weekday() >= 5 else 'true'
-with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-f.write(f"is_open={is_open}
-")
-PY
-env:
-GITHUB_OUTPUT: ${{ github.output }}
-
-
-- name: Install deps
-if: steps.marketday.outputs.is_open == 'true'
-run: |
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt || true
-if [ -f extra-requirements.txt ]; then pip install -r extra-requirements.txt; fi
-
-
-- name: Run headless + email summary
-if: steps.marketday.outputs.is_open == 'true'
-env:
-OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-SMTP_HOST: ${{ secrets.SMTP_HOST }}
-SMTP_PORT: ${{ secrets.SMTP_PORT }}
-SMTP_USER: ${{ secrets.SMTP_USER }}
-SMTP_PASS: ${{ secrets.SMTP_PASS }}
-EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-EMAIL_TO: ${{ secrets.EMAIL_TO }}
-TOTAL_PORTFOLIO_EUR: ${{ secrets.TOTAL_PORTFOLIO_EUR }}
-TRADE_BUDGET_EUR: ${{ secrets.TRADE_BUDGET_EUR }}
-STOP_PCT: ${{ secrets.STOP_PCT }}
-STARTING_CASH: ${{ secrets.STARTING_CASH }}
-RISK_PERC: ${{ secrets.RISK_PERC }}
-MAX_SPREAD_PCT: ${{ secrets.MAX_SPREAD_PCT }}
-TRAILING_WINDOW: ${{ secrets.TRAILING_WINDOW }}
-run: |
-. .venv/bin/activate
-python trading_script.py --headless --allocation 0.10 --sizing risk
-
-
-- name: Skip note
-if: steps.marketday.outputs.is_open != 'true'
-run: echo "Market closed today – skipping run."
+      - name: Install deps
+        if: steps.marketday.outputs.is_open == 'true'
+        run: |
+          python -m venv .venv
+          .
